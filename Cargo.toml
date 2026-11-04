@@ -1,0 +1,17 @@
+# The engines of the plugins in this repository. Each builds natively (for its tests) and for
+# wasm32-wasip1 (the engine.wasm of its package). plannr-core comes from the `plannr` submodule, so a
+# plugin is always built against the Plannr it was tested with.
+[workspace]
+resolver = "2"
+members = ["print3d/engine", "track/engine"]
+exclude = ["plannr"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

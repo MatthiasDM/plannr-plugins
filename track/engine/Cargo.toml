@@ -1,0 +1,20 @@
+[package]
+name = "plannr-plugin-track"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "Plannr toy car track plugin: 1:64 die-cast (Hot Wheels-compatible) track pieces that chain end to end, with connectors and supports, ready to 3D print"
+
+[lib]
+path = "src/lib.rs"
+# rlib for tests and native use, cdylib for the installable WebAssembly engine (wasm32-wasip1)
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+plannr-core = { path = "../../plannr/crates/plannr-core" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+plannr-plugin-print3d = { path = "../../print3d/engine" }

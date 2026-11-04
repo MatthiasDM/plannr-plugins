@@ -1,0 +1,3 @@
+[submodule "plannr"]
+	path = plannr
+	url = https://github.com/MatthiasDM/plannr-modeller.git
