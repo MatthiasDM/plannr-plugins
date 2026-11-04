@@ -1,0 +1,18 @@
+[package]
+name = "plannr-plugin-electrical"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "Plannr electrical plugin: distribution board, circuits, conduits, AREI checks and schematics on top of the construction plugin"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+plannr-core = { path = "../../plannr/crates/plannr-core" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+plannr-plugin-construction = { path = "../../construction/engine", features = ["embedded"] }
+

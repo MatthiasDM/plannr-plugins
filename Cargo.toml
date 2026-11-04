@@ -3,7 +3,7 @@
 # plugin is always built against the Plannr it was tested with.
 [workspace]
 resolver = "2"
-members = ["print3d/engine", "track/engine"]
+members = ["construction/engine", "electrical/engine", "framing/engine", "plumbing/engine", "print3d/engine", "track/engine"]
 exclude = ["plannr"]
 
 [workspace.dependencies]

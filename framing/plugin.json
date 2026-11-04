@@ -1,0 +1,13 @@
+{
+  "id": "framing",
+  "name": "Framing",
+  "version": "0.2.0",
+  "description": "Parametric wood framing: walls with studs, plates, headers and sheathing that join at corners and T-intersections, floors, every timber roof type (trusses or rafters, dormers, openings), beams and posts, stairs, foundations, hardware, an engineering check, wall elevations, framing plans and a cut list.",
+  "author": "MatthiasDM",
+  "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/framing",
+  "license": "MIT",
+  "plannr": "0.2.0",
+  "suggests": [
+    "construction"
+  ]
+}

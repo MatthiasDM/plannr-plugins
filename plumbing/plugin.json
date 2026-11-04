@@ -1,0 +1,13 @@
+{
+  "id": "plumbing",
+  "name": "Plumbing",
+  "version": "0.2.0",
+  "description": "Pipework as an installer lays it: Alupex, PEX, copper, PVC, PE and steel pipes with bends or elbow fittings, couplings and tees inserted where pipes meet, valves, mixers, manifolds, brackets at the right spacing, checks for open ends and drain fall, and a material list.",
+  "author": "MatthiasDM",
+  "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/plumbing",
+  "license": "MIT",
+  "plannr": "0.2.0",
+  "suggests": [
+    "construction"
+  ]
+}

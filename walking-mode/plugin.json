@@ -1,0 +1,10 @@
+{
+  "id": "walking-mode",
+  "name": "Walking mode",
+  "version": "0.2.0",
+  "description": "Walk through your model in first person with every editing tool still at hand: mouse-look and W A S D on a desktop, a joystick and look-drag on a phone, storey changes, a crosshair that clicks with the active tool.",
+  "author": "MatthiasDM",
+  "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/walking-mode",
+  "license": "MIT",
+  "plannr": "0.2.0"
+}

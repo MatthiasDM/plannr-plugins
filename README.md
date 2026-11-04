@@ -6,8 +6,13 @@ or off whenever you like.
 
 | Plugin | What it does | Download |
 |---|---|---|
-| **[3D Print](print3d/README.md)** | Exports the selection or the whole model as **3MF** or **STL** for your slicer (Bambu Studio, PrusaSlicer, OrcaSlicer, Cura): millimetres, Z up, any scale, welded and repaired into watertight solids, checked against your printer's build volume and laid out on the plate. | [plannr-plugin-print3d-0.1.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/print3d-v0.1.0/plannr-plugin-print3d-0.1.0.plannr-plugin) |
-| **[Car Track](track/README.md)** | Designs printable track for 1:64 die-cast cars (the orange Hot Wheels-style channel): straights, curves, ramps and loops that chain end to end, connectors that clip pieces together, supports, *Split to fit* for your printer, and a *Test drive* that runs a car over the track to find the launch speed it needs. Works with 3D Print to download the pieces. | [plannr-plugin-track-0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/track-v0.2.0/plannr-plugin-track-0.2.0.plannr-plugin) |
+| **[3D Print](print3d/README.md)** | Exports the selection or the whole model as **3MF** or **STL** for your slicer (Bambu Studio, PrusaSlicer, OrcaSlicer, Cura): millimetres, Z up, any scale, welded and repaired into watertight solids, checked against your printer and laid out on the plate. | [print3d 0.1.1](https://github.com/MatthiasDM/plannr-plugins/releases/download/print3d-v0.1.1/plannr-plugin-print3d-0.1.1.plannr-plugin) |
+| **[Car Track](track/README.md)** | Printable track for 1:64 die-cast cars (the orange Hot Wheels-style channel): straights, curves, ramps and loops that chain end to end, connectors, supports, *Split to fit*, and a *Test drive* that finds the launch speed a layout needs. Works with 3D Print. | [track 0.2.1](https://github.com/MatthiasDM/plannr-plugins/releases/download/track-v0.2.1/plannr-plugin-track-0.2.1.plannr-plugin) |
+| **[Construction](construction/README.md)** | Houses from rooms: storeys, rooms of any shape with shared walls built once, Belgian masonry coursed brick by brick (cavity walls, beam-and-block floors, lintels, foundations), doors and windows as real holes, flat / gable / hip / shed roofs, fixtures, runs, parametric furniture, takeoff, checks, U-values, and the import of Uzzetje house models. | [construction 0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/construction-v0.2.0/plannr-plugin-construction-0.2.0.plannr-plugin) |
+| **[Electrical](electrical/README.md)** | The installation to Belgian AREI/RGIE rules: board, circuits, conduits drawn or auto-routed, checks, and the situation plan and one-line diagram as SVG. Needs Construction. | [electrical 0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/electrical-v0.2.0/plannr-plugin-electrical-0.2.0.plannr-plugin) |
+| **[Framing](framing/README.md)** | Medeek-style wood framing: walls with studs, plates, headers and sheathing, floors, every timber roof type, beams and posts, stairs, foundations, hardware, an engineering check, plans and a cut list. | [framing 0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/framing-v0.2.0/plannr-plugin-framing-0.2.0.plannr-plugin) |
+| **[Plumbing](plumbing/README.md)** | Pipework as an installer lays it: Alupex, PEX, copper, PVC, PE and steel with bends or fittings, valves, mixers, manifolds, brackets, checks and a material list. | [plumbing 0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/plumbing-v0.2.0/plannr-plugin-plumbing-0.2.0.plannr-plugin) |
+| **[Walking mode](walking-mode/README.md)** | First-person walk-through with every tool at hand, on desktop and phone. | [walking-mode 0.2.0](https://github.com/MatthiasDM/plannr-plugins/releases/download/walking-mode-v0.2.0/plannr-plugin-walking-mode-0.2.0.plannr-plugin) |
 
 Every version is on the [releases page](https://github.com/MatthiasDM/plannr-plugins/releases).
 
@@ -19,8 +24,8 @@ Every version is on the [releases page](https://github.com/MatthiasDM/plannr-plu
 3. The same dialog has an on/off switch for every plugin and **Remove** for installed ones. A plugin that
    is off keeps its objects in your models; they show again when it is back on.
 
-Plugins need a Plannr server with plugin packages (Plannr 0.2.0 from
-[plannr-modeller](https://github.com/MatthiasDM/plannr-modeller), November 2026 or newer). On a public
+Plannr itself ([plannr-modeller](https://github.com/MatthiasDM/plannr-modeller)) ships without plugins:
+these are all of them. Install Construction first if you model houses; Electrical needs it. On a public
 instance only the server's admin may install them.
 
 ## How a plugin is made
