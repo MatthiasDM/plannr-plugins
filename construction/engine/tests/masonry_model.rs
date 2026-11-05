@@ -171,3 +171,23 @@ fn a_new_model_is_masonry_without_any_import() {
     let h = House::read(&d);
     assert!(!h.walls.iter().any(|(id, _)| id == &format!("{living}#wall.0")), "the derived wall gives way to the customised one");
 }
+
+#[test]
+fn a_partition_beside_an_l_shaped_room_stays_a_partition() {
+    // an L-shaped landing wraps the corner of an L-shaped bathroom; on their short shared wall the
+    // landing's centre lies on the bathroom's side, which used to make that wall a cavity wall
+    let mut d = Document::default(); registry().on_load(&mut d);
+    ap(&mut d, "construction.setup", json!({ "storeys": [{ "name": "Verdieping", "height": 2.6 }], "wallThickness": 0.1, "cavity": { "enabled": true, "innerLeaf": 0.15, "cavity": 0.06, "outerLeaf": 0.09 } }));
+    let bath = ap(&mut d, "construction.add_room", json!({ "name": "Badkamer", "level": 0, "points": [[3, 3.25], [6.05, 3.25], [6.05, 5.45], [5, 5.45], [5, 6.15], [3, 6.15]] })).created[0].clone();
+    let landing = ap(&mut d, "construction.add_room", json!({ "name": "Overloop", "level": 0, "points": [[5, 5.45], [6.05, 5.45], [6.05, 7.75], [3, 7.75], [3, 6.15], [5, 6.15]] })).created[0].clone();
+    let walls = data_of(&ap(&mut d, "masonry.summary", json!({})))["walls"].as_array().unwrap().clone();
+    let kind = |id: &str| walls.iter().find(|w| w["id"] == id).map(|w| w["type"].as_str().unwrap().to_string());
+    // the x = 5 wall (bathroom edge 3, landing edge 5) and the door wall (bathroom edge 2, landing edge 0)
+    for (a, b) in [(format!("{bath}#wall.3"), format!("{landing}#wall.5")), (format!("{bath}#wall.2"), format!("{landing}#wall.0"))] {
+        let k = kind(&a).or_else(|| kind(&b)).unwrap_or_else(|| panic!("no wall {a} / {b}"));
+        assert_eq!(k, "single", "{a}");
+        assert!(kind(&a).is_none() || kind(&b).is_none(), "built once");
+    }
+    // the outside walls keep their cavity
+    assert_eq!(kind(&format!("{bath}#wall.0")).as_deref(), Some("cavity"));
+}

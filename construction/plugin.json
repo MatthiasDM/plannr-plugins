@@ -1,7 +1,7 @@
 {
   "id": "construction",
   "name": "Construction",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Build houses from rooms: storeys, rooms of any shape with shared walls built once, cavity and solid masonry walls coursed brick by brick, doors, windows and garage gates cut as real holes, flat, gable, hip and shed roofs, beam-and-block floors, fixtures, pipe and cable runs, parametric furniture scripts, a material takeoff and an import of Uzzetje house models.",
   "author": "MatthiasDM",
   "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/construction",

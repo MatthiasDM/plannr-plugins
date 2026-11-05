@@ -1,7 +1,7 @@
 {
   "id": "electrical",
   "name": "Electrical",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The electrical installation to Belgian AREI/RGIE rules on top of Construction: distribution board, circuits with breakers, cables and differentials, conduits drawn or auto-routed, AREI checks, and the situation plan and one-line diagram as SVG.",
   "author": "MatthiasDM",
   "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/electrical",

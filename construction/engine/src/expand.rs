@@ -311,7 +311,9 @@ fn sources(m: &Model) -> Vec<Src> {
     let mut out = vec![];
     for (c, r) in &m.rooms {
         let n = r.points.len();
-        let centre = r.centroid();
+        // the winding tells which side is inside, also for L- and U-shaped rooms (a midpoint-to-centre
+        // test points the wrong way on the inner edges of a concave room and turns partitions into outside walls)
+        let ccw = crate::data::plan_area(&r.points) >= 0.0;
         let h = r.wall_height.unwrap_or_else(|| s.height(r.level));
         for e in 0..n {
             let (a, b) = (r.points[e], r.points[(e + 1) % n]);
@@ -319,8 +321,7 @@ fn sources(m: &Model) -> Vec<Src> {
             if l < 1e-4 { continue; }
             let d = [b[0] - a[0], b[1] - a[1]];
             let mut nrm = [d[1] / l, -d[0] / l];
-            let mid = [(a[0] + b[0]) * 0.5 - centre[0], (a[1] + b[1]) * 0.5 - centre[1]];
-            if nrm[0] * mid[0] + nrm[1] * mid[1] < 0.0 { nrm = [-nrm[0], -nrm[1]]; }
+            if !ccw { nrm = [-nrm[0], -nrm[1]]; }
             out.push(Src {
                 kind: SrcKind::Room { id: c.id.clone(), edge: e }, a, b, level: r.level, height: h, thickness: None, exterior_flag: false, out: nrm,
                 interior: fin(&r.finishes, &format!("wall.{e}.interior"), "plaster"),
