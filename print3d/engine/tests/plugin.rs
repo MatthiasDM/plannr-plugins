@@ -96,3 +96,77 @@ fn too_big_for_the_plate_is_a_warning() {
     assert_eq!(rep["objects"][0]["fits"], json!(false));
     assert!(rep["warnings"][0].as_str().unwrap().contains("larger than"));
 }
+
+fn solid(d: &mut Document, r: &Registry, min: [f64; 3], max: [f64; 3]) -> String {
+    ops(d, r, json!([{ "op": "solid_box", "min": min, "max": max }]))[0].created[0].clone()
+}
+
+#[test]
+fn solids_that_touch_become_one_solid_when_merged() {
+    let r = reg();
+    // side by side with the whole wall shared, with part of it shared, and one standing on the other
+    let cases: [([f64; 3], [f64; 3], f64); 3] = [
+        ([0.02, 0.0, 0.0], [0.04, 0.01, 0.02], 8000.0),
+        ([0.02, 0.0, 0.005], [0.03, 0.006, 0.015], 4000.0 + 600.0),
+        ([0.005, 0.01, 0.005], [0.015, 0.02, 0.012], 4000.0 + 700.0),
+    ];
+    for (min, max, volume) in cases {
+        let mut d = doc();
+        solid(&mut d, &r, [0.0, 0.0, 0.0], [0.02, 0.01, 0.02]);
+        solid(&mut d, &r, min, max);
+        let (b, rep) = objs(&d, &r, json!({ "merge": true }));
+        assert_eq!(b.len(), 1);
+        let c = &b[0].check;
+        assert!(c.watertight(), "{min:?}: {rep}");
+        assert_eq!((c.shells, c.non_manifold_edges, c.open_edges), (1, 0, 0), "{min:?}: {rep}");
+        assert!(c.internal > 0, "{min:?}: the wall between them is reported");
+        assert!((c.volume - volume).abs() < 1.0, "{min:?}: {} mm³", c.volume);
+        // apart, each is its own object and nothing is repaired
+        let (b, rep) = objs(&d, &r, json!({}));
+        assert!(b.len() == 2 && b.iter().all(|o| o.check.watertight() && o.check.internal == 0), "{rep}");
+    }
+}
+
+#[test]
+fn boxes_drawn_against_each_other_are_one_solid() {
+    let r = reg(); let mut d = doc();
+    // the second is drawn beside the first, lower and shorter: their walls lie on each other over part of the first's
+    boxed(&mut d, &r, [0.0, 0.0, 0.0], [0.02, 0.0, 0.02], 0.01);
+    let first: Vec<String> = d.entities.iter().map(|e| e.id().to_string()).collect();
+    ops(&mut d, &r, json!([{ "op": "make_group", "ids": first, "name": "A" }]));
+    boxed(&mut d, &r, [0.02, 0.0, 0.004], [0.035, 0.0, 0.016], 0.006);
+    let a = d.entities[0].id().to_string();
+    ops(&mut d, &r, json!([{ "op": "explode", "id": a }]));
+    let (b, rep) = objs(&d, &r, json!({}));
+    assert_eq!(b.len(), 1, "loose geometry is one object");
+    let c = &b[0].check;
+    assert!(c.watertight() && c.shells == 1 && c.non_manifold_edges == 0, "{rep}");
+    assert!((c.volume - (4000.0 + 15.0 * 12.0 * 6.0)).abs() < 1.0, "{}", c.volume);
+}
+
+#[test]
+fn letters_standing_on_a_plate_merge_with_it() {
+    let r = reg(); let mut d = doc();
+    solid(&mut d, &r, [0.0, 0.0, 0.0], [0.05, 0.002, 0.02]);
+    ops(&mut d, &r, json!([{ "op": "text3d", "text": "S45 Q", "position": [0.004, 0.002, 0.016], "height": 0.008, "depth": 0.001, "normal": [0, 1, 0], "u": [1, 0, 0] }]));
+    let (apart, _) = objs(&d, &r, json!({}));
+    let volume: f64 = apart.iter().map(|o| o.check.volume).sum();
+    assert!(apart.iter().all(|o| o.check.watertight()));
+    let (b, rep) = objs(&d, &r, json!({ "merge": true }));
+    let c = &b[0].check;
+    assert!(c.watertight(), "{rep}");
+    assert_eq!((c.shells, c.non_manifold_edges, c.open_edges), (1, 0, 0), "{rep}");
+    assert!((c.volume - volume).abs() < 0.01 * volume, "{} vs {volume}", c.volume);
+}
+
+#[test]
+fn faces_in_one_plane_that_do_not_overlap_are_left_alone() {
+    let r = reg(); let mut d = doc();
+    // a step: the top of the low box and the bottom of the high one are in one plane, facing opposite ways, apart
+    solid(&mut d, &r, [0.0, 0.0, 0.0], [0.02, 0.01, 0.02]);
+    solid(&mut d, &r, [0.03, 0.01, 0.0], [0.05, 0.02, 0.02]);
+    let (b, rep) = objs(&d, &r, json!({ "merge": true }));
+    let c = &b[0].check;
+    assert!(c.watertight() && c.shells == 2 && c.internal == 0, "{rep}");
+    assert_eq!(b[0].mesh.t.len(), 24);
+}

@@ -20,9 +20,10 @@ Manage plugins… → Install from file**. Switch it off or remove it in the sam
    print `(x, y, z)` = model `(x, −z, y) × 1000 × scale`. `scale` is print size ÷ model size: 1 for an
    object modelled at real size, 0.01 for a house at 1:100.
 4. **Weld** points closer than 0.001 mm into shared vertices.
-5. **Repair** (`repair`, default on): degenerate triangles out; a triangle that appears twice with
-   opposite windings is an internal wall between two solids that touch — both go, so the solids merge;
-   duplicates of the same winding go; **T-junctions** (a corner of one face on the edge of another, as
+5. **Repair** (`repair`, default on): degenerate triangles out; where faces of two solids in one object
+   lie on each other, facing opposite ways, the part they share is an internal wall — it goes and what is
+   left of each face is cut to fit, so the solids merge (a box standing on a plate, two boxes side by
+   side, letters on a sign); duplicates of the same winding go; **T-junctions** (a corner of one face on the edge of another, as
    when a small rectangle is pulled out of a big face) are split so the edges match; windings are made
    consistent across each shell and turned outward (positive volume).
 6. **Check** each object: shells, open edges (holes), non-manifold edges (more than two faces on an
@@ -82,6 +83,7 @@ browser. Other plugins reach it as `window.plannr.print3d.download(format, opts,
 
 - Faces need thickness: Push/Pull a face into a solid. A lone face is reported as a part without thickness.
 - Make each printed part a group or component, so it becomes its own object.
-- Two solids that share a face are merged; solids that only overlap are left as they are (slicers union
-  overlapping shells of one object).
+- Solids of one object that touch face to face are merged, however much of the face they share (use
+  `merge` to make one object of separate groups); solids that only overlap are left as they are (slicers
+  union overlapping shells of one object).
 - Holes left open are reported with the number of open edges; slicers patch small ones, but check.

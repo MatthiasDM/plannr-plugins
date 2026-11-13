@@ -30,7 +30,7 @@ pub fn profile(doc: &Document) -> Profile {
 const LOOKS: [(&str, &str, &str); 3] = [("track-orange", MAT_TRACK, "#ff7a1a"), ("track-blue", MAT_CONNECTOR, "#1f5fd6"), ("track-grey", MAT_SUPPORT, "#9aa3ad")];
 fn ensure(doc: &mut Document) {
     for (id, name, color) in LOOKS {
-        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id: id.into(), name: name.into(), color: color.into(), opacity: 1.0 }); }
+        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id: id.into(), name: name.into(), color: color.into(), opacity: 1.0, texture: None }); }
     }
     if !doc.extensions.contains_key(PLUGIN_ID) { doc.extensions.insert(PLUGIN_ID.into(), json!({ "profile": Profile::default() })); }
 }

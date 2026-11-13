@@ -39,7 +39,7 @@ pub fn ensure(doc: &mut Document) {
     for (key, name, color, opacity) in MATERIALS {
         let id = format!("construction.{key}");
         if !doc.materials.iter().any(|m| m.id == id) {
-            doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity: *opacity });
+            doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity: *opacity, texture: None });
         }
     }
     for (name, ..) in script::C_MATERIALS { ensure_script_material(doc, name); }
@@ -47,7 +47,7 @@ pub fn ensure(doc: &mut Document) {
 }
 fn ensure_script_material(doc: &mut Document, name: &str) {
     let (id, label, color, opacity) = script::material_spec(name);
-    if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: label, color, opacity }); }
+    if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: label, color, opacity, texture: None }); }
 }
 /// Materials the scripted units in the document ask for (named or `#RRGGBB`) must exist for compile.
 pub fn ensure_unit_materials(doc: &mut Document) {

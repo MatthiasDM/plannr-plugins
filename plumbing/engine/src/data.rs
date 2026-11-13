@@ -265,7 +265,7 @@ impl House {
 pub fn ensure(doc: &mut Document) {
     for (key, name, color, opacity) in LOOKS {
         let id = look_id(key);
-        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity }); }
+        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity, texture: None }); }
     }
     if !doc.extensions.contains_key(PLUGIN_ID) { doc.extensions.insert(PLUGIN_ID.into(), serde_json::json!({ "version": 1 })); }
 }

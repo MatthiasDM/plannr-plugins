@@ -1,7 +1,7 @@
 {
   "id": "print3d",
   "name": "3D Print",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Export the selection or the whole model as 3MF or STL for a slicer (Bambu Studio, PrusaSlicer, OrcaSlicer, Cura): millimetres, Z up, any scale, welded and repaired into watertight solids, checked against your printer's build volume and laid out on the plate.",
   "author": "MatthiasDM",
   "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/print3d",

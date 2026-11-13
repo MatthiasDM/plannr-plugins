@@ -48,7 +48,7 @@ fn room4(d: &mut Document) -> String { op(d, "add_room", json!({ "name": "Box", 
 fn importing_again_replaces_the_construction_entities_and_keeps_what_was_drawn_beside_them() {
     let mut d = imported();
     let rooms = customs(&d, "construction.room").len();
-    apply(&mut d, &Op::DrawRectangle { corner: [20.0, 0.0, 20.0], opposite: [22.0, 0.0, 22.0], normal: [0.0, 1.0, 0.0], u: None, layer: None, material: None }, &reg()).unwrap();
+    apply(&mut d, &Op::DrawRectangle { corner: [20.0, 0.0, 20.0], opposite: [22.0, 0.0, 22.0], normal: [0.0, 1.0, 0.0], u: None, layer: None, material: None, group: None }, &reg()).unwrap();
     let faces = d.entities.iter().filter(|e| matches!(e, Entity::Face(_))).count();
     let r = op(&mut d, "import_house", json!({ "house": house() }));
     assert_eq!(customs(&d, "construction.room").len(), rooms, "the same rooms, not twice as many");
@@ -228,7 +228,7 @@ fn core_without_the_plugin_ignores_custom_entities() {
     let empty = Registry::new();
     let s = compile(&d, &empty, &CompileOptions::default());
     assert_eq!(s.metrics.faces, 0);
-    let r = apply(&mut d, &Op::DrawRectangle { corner: [0.0; 3], opposite: [1.0, 0.0, 1.0], normal: [0.0, 1.0, 0.0], u: None, layer: None, material: None }, &empty).unwrap();
+    let r = apply(&mut d, &Op::DrawRectangle { corner: [0.0; 3], opposite: [1.0, 0.0, 1.0], normal: [0.0, 1.0, 0.0], u: None, layer: None, material: None, group: None }, &empty).unwrap();
     assert_eq!(r.created.len(), 1);
     let rid = customs(&d, "construction.room")[0].id.clone();
     let e = apply(&mut d, &Op::Move { ids: vec![rid], delta: [1.0, 0.0, 0.0] }, &empty);

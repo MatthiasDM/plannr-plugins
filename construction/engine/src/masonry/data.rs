@@ -368,7 +368,7 @@ pub fn ensure(doc: &mut Document) {
     if !doc.extensions.contains_key(PLUGIN_ID) { save_settings(doc, &Settings::default()); }
     for (key, name, color) in MATERIALS {
         let id = material_id(key);
-        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity: 1.0 }); }
+        if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id, name: name.to_string(), color: color.to_string(), opacity: 1.0, texture: None }); }
     }
 }
 /// Change the leaf / cavity / partition thicknesses of the defaults (renaming a unit whose width changes).
