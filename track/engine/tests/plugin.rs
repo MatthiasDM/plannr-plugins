@@ -180,3 +180,89 @@ fn centreline_runs_along_each_chain_and_knows_a_circuit() {
     let min_uy = open["frames"].as_array().unwrap().iter().map(|f| f[8].as_f64().unwrap()).fold(1.0, f64::min);
     assert!(min_uy < -0.99);
 }
+
+// ---- joining track that already exists ----------------------------------------------------------
+
+#[test]
+fn an_adapter_is_a_watertight_solid_both_ways_round() {
+    let r = reg();
+    for real_end in ["end", "start"] {
+        let mut d = doc();
+        // a real track measured a little wider and thicker than the printed one, so the taper does work
+        run(&mut d, &r, "track.set_real", json!({ "width": 0.0455, "floor": 0.0024, "wall": 0.0092, "wallThickness": 0.0021, "holeLength": 0.0086, "holeWidth": 0.0126, "holeInset": 0.0082, "fit": 0.0002 }));
+        run(&mut d, &r, "track.add_piece", json!({ "kind": "adapter", "length": 0.07, "realEnd": real_end }));
+        let objs = print_check(&d, &r);
+        assert_eq!(objs.len(), 1, "{real_end}");
+        let c = &objs[0].check;
+        assert!(c.watertight(), "adapter {real_end}: open {} non-manifold {} surfaces {}", c.open_edges, c.non_manifold_edges, c.surfaces);
+        assert_eq!(c.shells, 1, "adapter {real_end}");
+        assert_eq!(c.flipped, 0, "adapter {real_end}: windings");
+    }
+}
+
+#[test]
+fn measuring_the_real_track_marks_it_measured_and_resizes_the_adapter() {
+    let r = reg();
+    let mut d = doc();
+    let id = run(&mut d, &r, "track.add_piece", json!({ "kind": "adapter", "length": 0.08 })).created[0].clone();
+    let before = plannr_plugin_track::info(&d, [256.0; 3]);
+    assert_eq!(before["real"]["measured"], json!(false));
+    assert!(before["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("not been measured")), "{before:#}");
+    run(&mut d, &r, "track.set_real", json!({ "width": 0.06 }));
+    let after = plannr_plugin_track::info(&d, [256.0; 3]);
+    assert_eq!(after["real"]["measured"], json!(true));
+    assert!(!after["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("not been measured")));
+    // the adapter now has to swell to 60 mm somewhere along it, so its print size grew
+    let w = |v: &Value| v["pieces"].as_array().unwrap().iter().find(|p| p["id"] == json!(id)).unwrap()["sizeMm"][1].as_f64().unwrap();
+    assert!(w(&after) > w(&before) + 10.0, "{} → {}", w(&before), w(&after));
+}
+
+#[test]
+fn a_fit_test_coupon_prints_as_one_labelled_solid() {
+    let r = reg();
+    let mut d = doc();
+    run(&mut d, &r, "track.set_real", json!({ "holeLength": 0.008, "holeWidth": 0.012 }));
+    run(&mut d, &r, "track.fit_test", json!({ "steps": 5, "from": 0.00005, "to": 0.00045 }));
+    let objs = print_check(&d, &r);
+    assert_eq!(objs.len(), 1);
+    let c = &objs[0].check;
+    assert!(c.watertight(), "coupon: open {} non-manifold {} surfaces {} shells {}", c.open_edges, c.non_manifold_edges, c.surfaces, c.shells);
+    // plate, pegs, sockets and the embossed numbers all touch, so the repair welds them into one body
+    assert_eq!(c.shells, 1, "coupon shells");
+    assert!(c.volume > 500.0, "coupon volume {}", c.volume);
+}
+
+#[test]
+fn an_anchor_is_reference_only_and_never_reaches_the_slicer() {
+    let r = reg();
+    let mut d = doc();
+    run(&mut d, &r, "track.add_anchor", json!({ "start": [0.5, 0.2, 0.0], "heading": 180, "name": "Garage exit" }));
+    assert!(print_check(&d, &r).is_empty(), "an anchor has no faces to print");
+    run(&mut d, &r, "track.add_piece", json!({ "kind": "straight", "length": 0.2 }));
+    assert_eq!(print_check(&d, &r).len(), 1, "only the piece prints");
+}
+
+#[test]
+fn a_piece_can_start_on_an_anchor_and_a_chain_can_be_snapped_onto_one() {
+    let r = reg();
+    let mut d = doc();
+    let a = run(&mut d, &r, "track.add_anchor", json!({ "start": [0.5, 0.2, 0.1], "heading": 90, "pitch": -10 })).created[0].clone();
+    let p = run(&mut d, &r, "track.add_piece", json!({ "kind": "straight", "length": 0.2, "anchor": a })).created[0].clone();
+    let i = plannr_plugin_track::info(&d, [256.0; 3]);
+    let me = i["pieces"].as_array().unwrap().iter().find(|x| x["id"] == json!(p)).unwrap().clone();
+    assert_eq!(me["start"], json!([0.5, 0.2, 0.1]));
+    assert!(i["anchors"][0]["match"]["joined"].as_bool().unwrap(), "{i:#}");
+
+    // a second chain laid somewhere else, snapped on by its far end
+    let b = run(&mut d, &r, "track.add_piece", json!({ "kind": "straight", "length": 0.3, "start": [-1.0, 0.0, -1.0], "heading": 0 })).created[0].clone();
+    let c = run(&mut d, &r, "track.add_piece", json!({ "kind": "curve", "angle": 45, "after": b })).created[0].clone();
+    let a2 = run(&mut d, &r, "track.add_anchor", json!({ "start": [0.2, 0.0, 0.8], "heading": 20 })).created[0].clone();
+    run(&mut d, &r, "track.snap_to_anchor", json!({ "piece": c, "anchor": a2, "at": "end" }));
+    let i = plannr_plugin_track::info(&d, [256.0; 3]);
+    let m = i["anchors"].as_array().unwrap().iter().find(|x| x["id"] == json!(a2)).unwrap()["match"].clone();
+    assert_eq!(m["piece"], json!(c));
+    assert!(m["gapMm"].as_f64().unwrap() < 0.2, "{m:#}");
+    assert!(m["headingErrorDeg"].as_f64().unwrap().abs() < 0.2, "{m:#}");
+    // the chain kept its shape: the two pieces still meet
+    assert!(i["chains"].as_array().unwrap().iter().any(|ch| ch["pieces"] == json!([b, c])), "{i:#}");
+}

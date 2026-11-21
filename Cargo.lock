@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "plannr-plugin-track"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "plannr-core",
  "plannr-plugin-print3d",

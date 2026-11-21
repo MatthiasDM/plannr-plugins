@@ -41,6 +41,7 @@ the fit before printing a whole layout.
 | `curve` | lead, arc, lead | `radius` (centreline), `angle` (degrees, + turns left, − right) |
 | `ramp` | lead, a smooth rise, lead | `length`, `rise` (m, negative goes down), `endPitch` (degrees; 0 = level again) |
 | `loop` | lead, a full loop, lead | `radius`, `offset` (sideways shift from entry to exit, default width + 4 mm) |
+| `adapter` | lead, a change-over, lead | `length`, `realEnd` (`start` / `end`: which end is the real track's profile) — see [Joining track you already own](#joining-track-you-already-own) |
 
 A piece starts at `start` ([x, y, z], the centreline on the underside of the floor; y = 0 is the ground),
 heading `heading` degrees in plan (0 = +x, 90 = −z, positive turns left) and pitched `pitch` degrees up.
@@ -53,6 +54,47 @@ A ramp's pitch runs smoothly from its start pitch to `endPitch`, with a sine-sha
 piece rises exactly `rise`; a ramp that is too short for its rise says so. A loop is drawn in the plane of
 its start: the floor faces the loop's centre at the top, and the exit is shifted sideways so it passes
 the entry. Pieces are closed solids, ready to print; seams across curved surfaces are drawn soft.
+
+## Joining track you already own
+
+A printed layout that has to meet a shop-bought set — the mouth of a garage, the end of an orange straight —
+needs three things the rest of the plugin does not: the real track's measurements, an adapter piece that
+changes over to them, and an anchor saying where the real track is.
+
+### 1. Measure the real track
+
+`set_real` holds the real channel in metres, as a caliper reads it: `width`, `floor`, `wall` (top of the wall
+from the underside), `wallThickness`, `holeLength` / `holeWidth` (the rectangular hole in the real floor,
+along the track and across it), `holeInset` (real end → hole centre) and `fit` (the play a printed peg needs
+in a real hole, per side). Setting any of them marks the real track **measured**; until then the plugin uses
+its own die-cast guesses and every adapter, anchor and coupon says so — there is no published spec for the
+orange track, so nothing here is a copy of one.
+
+### 2. Print the fit test, once
+
+`fit_test` adds a coupon: a plate carrying a row of **pegs** (a printed peg going into a real hole) and a row
+of **sockets** (a real connector's peg going into a printed hole), stepped from `from` to `to` clearance, each
+step with its clearance in hundredths of a millimetre raised beside it. Print it at the settings you will use
+for the track, try every step on a real piece, and put the one that clicks without play into `set_real` as
+`fit`. One small print saves a plate of track that does not fit.
+
+### 3. The adapter piece
+
+An `adapter` is a short piece with the plugin's channel at one end and the measured real channel at the
+other, blended over the run between them; both ends keep a straight lead, so each joins like the track it
+copies. The real end's connector hole is the real hole plus the measured play, so a **genuine** connector
+clips your adapter to real track. An adapter cannot be split for the printer: make it shorter instead.
+
+### 4. Anchors
+
+An `track.anchor` marks where the track you already own ends: a point, a `heading` and a `pitch` pointing the
+way the **new** track runs from there, and a name ("Garage, second floor exit"). It is drawn as reference
+edges and carries no faces, so it never reaches the slicer. From there:
+
+- `add_piece { anchor: <id> }` starts a piece exactly on it;
+- `snap_to_anchor` carries a whole chain, turning and moving it as one, so a chosen end lands on the anchor;
+- `info` reports, per anchor, the chain end that reaches it, how far off it is and by how many degrees, and
+  warns while the track comes close without meeting it.
 
 ## Connectors and supports
 
@@ -73,12 +115,18 @@ Both follow their piece; they are removed with it.
 | `update_piece` | `id`, `patch` (any piece field; `direction: left/right` for curves; `prev: null` comes loose where it is; `start` / `heading` place it on its own) |
 | `remove_pieces` | `ids`; `heal` (default true) chains the piece after onto the piece before, closing the gap |
 | `set_profile` | `preset` and / or profile fields |
+| `set_real` | the real track as measured: `width`, `floor`, `wall`, `wallThickness`, `holeLength`, `holeWidth`, `holeInset`, `fit` (play per side) |
+| `fit_test` | the calibration coupon: `from`, `to` (clearance per side, m), `steps` (1–12), `start`, `heading` |
+| `update_fit_test` | `id`, `patch` |
+| `add_anchor` | `start`, `heading`, `pitch`, `name`: where existing track ends |
+| `update_anchor` | `id`, `patch` |
+| `snap_to_anchor` | `piece`, `anchor`, `at` (`start` / `end`): carry the whole chain onto the anchor |
 | `add_connectors` | `pieces?`, `ends?` |
 | `add_support` | `piece`, `at` or `t` (0–1) |
 | `auto_supports` | `pieces?`, `spacing` (0.15), `minHeight` (0.012) |
 | `split_to_fit` | `plate` [w, d, h] mm (default 256³), `pieces?`: pieces too big for the printer are split — straights into equal straights, curves into smaller curves whose radius is chosen so the chain ends exactly where it did (a piece moves its end like an arc of radius r + lead·cot(a/2), and that is kept), ramps at points along their own centreline. Supports and end connectors move to the part they are under; new joints get connectors when the track has any. Loops can't be split. |
 | `centreline` | The centreline of every chain, for simulating a car: per chain the frames `[s, cx, cy, cz, tx, ty, tz, ux, uy, uz]` (metres along the chain; centre of the floor's underside; forward; up out of the floor), its pieces with the stretch `s0`–`s1` each covers, its length and `closed`. No change. |
-| `info` | `plate?`: pieces (label, length, print size turned to fit, fits, start / end pose), chains (length, `closed`, gap and heading error when not), counts, warnings. No change. |
+| `info` | `plate?`: pieces (label, length, print size turned to fit, fits, start / end pose), chains (length, `closed`, gap and heading error when not), the anchors with the chain end that reaches each one, the measured real track, counts, warnings. No change. |
 
 All are MCP tools `plugin.track.<op>`. Example: a closed oval of 60 cm straights and 180° curves,
 connectors at every joint, split for a Bambu A1, exported:
@@ -97,13 +145,17 @@ export_file { format: "3mf", ids: [ …the track entity ids… ] }
 
 - **Lay track**: click the start, click where the first straight ends (10 mm steps, or type the length in
   mm); the straight shows before the click.
+- **Anchor on existing track**: click the mouth of the track you already own, then click the way the new
+  track should run from it.
 - **Car Track** panel: the palette (straight, left and right curve, ramp up and down, loop) adds a piece on
   the end of the selected piece, or of the last chain, with the sizes below it; *+ Connectors*,
   *+ Supports*, *Print all (3MF)* (every piece, connector and support, laid out on the plate of the printer
   picked in the 3D Print panel); the track's chains with each piece's print size (⚠ when too big) and
-  *Split to fit*; the profile.
+  *Split to fit*; **Real track** (the measurements, the fit test coupon and its download); the anchors with
+  how far the track is from each one and a *Snap*; the profile.
 - **Entity Info** of a piece edits its kind and sizes, shows what it follows, and has *Remove & close
-  gap*, *Detach* and *+ Support here*.
+  gap*, *Detach* and *+ Support here*. An anchor's edits its place, heading, slope and name, and starts an
+  adapter on it; a coupon's edits its clearance range and steps.
 
 ## Test drive
 
@@ -139,3 +191,6 @@ jumps and (with `findMin`) `minSpeed` / `maxSpeed`.
 Print pieces flat as they are laid out (curves and straights need no supports). Ramps and loops stand up
 from the plate and need the slicer's supports, or print loops in a flexible filament (TPU). 0.2 mm
 layers and 3 walls make sturdy track; connectors print best in PETG or PLA with 100 % infill.
+
+Before a layout that joins track you already own: print the fit test coupon first, at those same settings.
+*Print all (3MF)* leaves the coupon and the anchors out — the coupon has its own *Print coupon*.

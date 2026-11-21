@@ -27,12 +27,24 @@ pub fn profile(doc: &Document) -> Profile {
     doc.extensions.get(PLUGIN_ID).and_then(|v| v.get("profile")).and_then(|p| serde_json::from_value(p.clone()).ok()).unwrap_or_default()
 }
 
-const LOOKS: [(&str, &str, &str); 3] = [("track-orange", MAT_TRACK, "#ff7a1a"), ("track-blue", MAT_CONNECTOR, "#1f5fd6"), ("track-grey", MAT_SUPPORT, "#9aa3ad")];
+/// The real track this layout joins, as measured (or the plugin's guesses while `measured` is false).
+pub fn real(doc: &Document) -> Real {
+    doc.extensions.get(PLUGIN_ID).and_then(|v| v.get("real")).and_then(|p| serde_json::from_value(p.clone()).ok()).unwrap_or_default()
+}
+
+fn set_ext(doc: &mut Document, key: &str, value: Value) {
+    let ext = doc.extensions.entry(PLUGIN_ID.to_string()).or_insert_with(|| json!({}));
+    if !ext.is_object() { *ext = json!({}); }
+    ext[key] = value;
+}
+
+const LOOKS: [(&str, &str, &str); 4] = [("track-orange", MAT_TRACK, "#ff7a1a"), ("track-blue", MAT_CONNECTOR, "#1f5fd6"), ("track-grey", MAT_SUPPORT, "#9aa3ad"), ("track-test", MAT_TEST, "#2e9e5b")];
 fn ensure(doc: &mut Document) {
     for (id, name, color) in LOOKS {
         if !doc.materials.iter().any(|m| m.id == id) { doc.materials.push(Material { id: id.into(), name: name.into(), color: color.into(), opacity: 1.0, texture: None }); }
     }
-    if !doc.extensions.contains_key(PLUGIN_ID) { doc.extensions.insert(PLUGIN_ID.into(), json!({ "profile": Profile::default() })); }
+    if doc.extensions.get(PLUGIN_ID).and_then(|v| v.get("profile")).is_none() { set_ext(doc, "profile", json!(Profile::default())); }
+    if doc.extensions.get(PLUGIN_ID).and_then(|v| v.get("real")).is_none() { set_ext(doc, "real", json!(Real::default())); }
 }
 fn has_track(doc: &Document) -> bool { doc.entities.iter().any(|e| matches!(e, Entity::Custom(c) if c.type_.starts_with("track."))) }
 
@@ -84,7 +96,21 @@ fn expand(e: &Custom, doc: &Document) -> Vec<Entity> {
     let mut lay = Layout::new(doc);
     match e.type_.as_str() {
         T_PIECE => {
-            if let Some(p) = lay.path(&e.id) { piece_faces(&mut out, &p, &lay.prof, &mat_of(doc, &e.data, "track-orange")); }
+            if let Some(path) = lay.path(&e.id) {
+                let mat = mat_of(doc, &e.data, "track-orange");
+                match lay.map.get(&e.id).map(|p| (p.kind, p.real_end)) {
+                    Some((Kind::Adapter, at)) => adapter_faces(&mut out, &path, &lay.prof, &real(doc), at, &mat),
+                    _ => piece_faces(&mut out, &path, &lay.prof, &mat),
+                }
+            }
+        }
+        T_ANCHOR => {
+            let Ok(a) = serde_json::from_value::<Anchor>(e.data.clone()) else { return vec![] };
+            return anchor_edges(&e.id, &e.layer, Pose { p: a.start, heading: a.heading, pitch: a.pitch }, &real(doc), &lay.prof);
+        }
+        T_FIT_TEST => {
+            let Ok(ft) = serde_json::from_value::<FitTest>(e.data.clone()) else { return vec![] };
+            fit_test_faces(&mut out, &ft, &lay.prof, &real(doc), &mat_of(doc, &e.data, "track-test"));
         }
         T_CONNECTOR => {
             let Ok(c) = serde_json::from_value::<Connector>(e.data.clone()) else { return vec![] };
@@ -131,6 +157,13 @@ fn custom_mut<'a>(doc: &'a mut Document, id: &str) -> Option<&'a mut Custom> {
     doc.entities.iter_mut().find_map(|e| match e { Entity::Custom(c) if c.id == id => Some(c), _ => None })
 }
 
+fn anchor_of(doc: &Document, id: &str) -> Option<Anchor> {
+    doc.entities.iter().find_map(|e| match e { Entity::Custom(c) if c.id == id && c.type_ == T_ANCHOR => serde_json::from_value(c.data.clone()).ok(), _ => None })
+}
+pub fn anchors(doc: &Document) -> Vec<(String, Anchor)> {
+    doc.entities.iter().filter_map(|e| match e { Entity::Custom(c) if c.type_ == T_ANCHOR => serde_json::from_value(c.data.clone()).ok().map(|a| (c.id.clone(), a)), _ => None }).collect()
+}
+
 fn f(v: &Value, k: &str) -> Option<f64> { v.get(k).and_then(|x| x.as_f64()) }
 fn p3(v: &Value, k: &str) -> Option<[f64; 3]> { let a = v.get(k)?.as_array()?; Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?]) }
 
@@ -142,6 +175,10 @@ fn validate(p: &Piece, prof: &Profile) -> Result<(), OpError> {
             if p.angle.abs() < 1.0 || p.angle.abs() > 360.0 { return err("the curve angle must be between 1° and 360° (negative turns right)"); }
         }
         Kind::Loop => if p.radius < 0.04 { return err("a loop needs a radius of at least 40 mm"); },
+        Kind::Adapter => {
+            if !(0.03..=0.5).contains(&p.length) { return err("an adapter must be between 30 mm and 500 mm long"); }
+            if p.length < prof.lead * 2.0 + 0.01 { return err(format!("an adapter needs at least {:.0} mm: a lead at each end and a run to change over in", (prof.lead * 2.0 + 0.01) * 1000.0)); }
+        }
     }
     if p.pitch.abs() > 80.0 || p.end_pitch.abs() > 80.0 { return err("pitch must stay within ±80°"); }
     Ok(())
@@ -205,11 +242,17 @@ fn apply(op: &str, v: Value, doc: &mut Document) -> Result<OpResult, OpError> {
     match op {
         "add_piece" => {
             let kind: Kind = serde_json::from_value(v.get("kind").cloned().unwrap_or(json!("straight"))).map_err(|_| OpError("kind must be straight, curve, ramp or loop".into()))?;
-            let mut p = Piece { kind, start: [0.0; 3], heading: 0.0, pitch: 0.0, length: 0.2, radius: 0.15, angle: 90.0, rise: 0.0, end_pitch: 0.0, offset: None, prev: None, name: None, material: None };
+            let mut p = Piece { kind, start: [0.0; 3], heading: 0.0, pitch: 0.0, length: 0.2, radius: 0.15, angle: 90.0, rise: 0.0, end_pitch: 0.0, offset: None, real_end: End::End, prev: None, name: None, material: None };
             if kind == Kind::Ramp { p.rise = 0.04; }
             if kind == Kind::Loop { p.radius = 0.09; }
+            if kind == Kind::Adapter { p.length = 0.06; }
             merge_piece(&mut p, &v)?;
-            let after = match v.get("after").and_then(|a| a.as_str()) { Some("last") => tail(doc), Some(a) => Some(a.to_string()), None => None };
+            // start on an anchor: the mouth of the garage, the end of a piece of shop-bought track
+            if let Some(a) = v.get("anchor").and_then(|x| x.as_str()) {
+                let an = anchor_of(doc, a).ok_or(OpError(format!("no anchor {a}")))?;
+                p.start = an.start; p.heading = an.heading; p.pitch = an.pitch; p.prev = None;
+            }
+            let after = if v.get("anchor").is_some() { None } else { match v.get("after").and_then(|a| a.as_str()) { Some("last") => tail(doc), Some(a) => Some(a.to_string()), None => None } };
             if let Some(a) = &after {
                 let mut lay = Layout::new(doc);
                 if !lay.map.contains_key(a) { return err(format!("no track piece {a}")); }
@@ -277,7 +320,7 @@ fn apply(op: &str, v: Value, doc: &mut Document) -> Result<OpResult, OpError> {
             if p.wall_thickness < 0.0006 || p.wall_thickness * 2.0 > p.width * 0.8 { return err("wall thickness must be at least 0.6 mm and leave a channel"); }
             if p.lead < 0.0 || p.lead > 0.2 { return err("lead must be 0–200 mm"); }
             if p.segment < 0.002 { p.segment = 0.002; }
-            doc.extensions.insert(PLUGIN_ID.into(), json!({ "profile": p }));
+            set_ext(doc, "profile", json!(p));
             res.modified = pieces(doc).into_iter().map(|(id, _)| id).collect();
         }
         "add_connectors" => {
@@ -332,6 +375,105 @@ fn apply(op: &str, v: Value, doc: &mut Document) -> Result<OpResult, OpError> {
             }
             for s in add { res.created.push(push(doc, T_SUPPORT, serde_json::to_value(s).unwrap())); }
         }
+        "set_real" => {
+            let mut r = real(doc);
+            let mut cur = serde_json::to_value(&r).unwrap();
+            let touched: Vec<String> = v.as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect();
+            for (k, x) in v.as_object().into_iter().flatten() { cur[k] = x.clone(); }
+            r = serde_json::from_value(cur).map_err(|e| OpError(format!("invalid measurements: {e}")))?;
+            if !(0.015..=0.2).contains(&r.width) { return err("the real track's width must be 15–200 mm"); }
+            if r.floor < 0.0004 || r.floor >= r.wall { return err("the real floor must be at least 0.4 mm and lower than its walls"); }
+            if r.wall_thickness < 0.0004 || r.wall_thickness * 2.0 > r.width * 0.8 { return err("the real wall thickness must be at least 0.4 mm and leave a channel"); }
+            if r.hole_length < 0.001 || r.hole_width < 0.001 { return err("the hole in the real floor must be at least 1 mm each way"); }
+            if r.hole_width > r.width - 2.0 * r.wall_thickness { return err("the hole is wider than the real channel: check which way you measured it"); }
+            if r.hole_inset < r.hole_length / 2.0 { return err("the hole would hang over the end of the real piece: check holeInset"); }
+            if !(0.0..=0.002).contains(&r.fit) { return err("fit must be 0–2 mm per side (the fit test tells you which)"); }
+            // measuring anything but the flag itself means someone put a caliper on a piece
+            if touched.iter().any(|k| k != "measured") && v.get("measured").is_none() { r.measured = true; }
+            set_ext(doc, "real", json!(r));
+            res.modified = pieces(doc).into_iter().filter(|(_, p)| p.kind == Kind::Adapter).map(|(id, _)| id).collect();
+            res.modified.extend(doc.entities.iter().filter(|e| matches!(e, Entity::Custom(c) if c.type_ == T_ANCHOR || c.type_ == T_FIT_TEST)).map(|e| e.id().to_string()));
+        }
+        "add_anchor" => {
+            let mut a = Anchor { start: [0.0; 3], heading: 0.0, pitch: 0.0, name: None };
+            if let Some(st) = p3(&v, "start") { a.start = st; }
+            if let Some(h) = f(&v, "heading") { a.heading = h; }
+            if let Some(pi) = f(&v, "pitch") { a.pitch = pi; }
+            if let Some(n) = v.get("name").and_then(|x| x.as_str()) { a.name = Some(n.into()); }
+            if a.pitch.abs() > 80.0 { return err("an anchor's pitch must stay within ±80°"); }
+            res.created.push(push(doc, T_ANCHOR, serde_json::to_value(&a).unwrap()));
+        }
+        "update_anchor" => {
+            let id = v.get("id").and_then(|x| x.as_str()).ok_or(OpError("id is required".into()))?.to_string();
+            let mut a = anchor_of(doc, &id).ok_or(OpError(format!("no anchor {id}")))?;
+            let src = v.get("patch").filter(|x| x.is_object()).unwrap_or(&v).clone();
+            let mut cur = serde_json::to_value(&a).unwrap();
+            for (k, x) in src.as_object().into_iter().flatten() { if k != "id" { cur[k] = x.clone(); } }
+            a = serde_json::from_value(cur).map_err(|e| OpError(format!("invalid anchor: {e}")))?;
+            if a.pitch.abs() > 80.0 { return err("an anchor's pitch must stay within ±80°"); }
+            custom_mut(doc, &id).unwrap().data = serde_json::to_value(&a).unwrap();
+            res.modified.push(id);
+        }
+        "update_fit_test" => {
+            let id = v.get("id").and_then(|x| x.as_str()).ok_or(OpError("id is required".into()))?.to_string();
+            let cur = doc.entities.iter().find_map(|e| match e { Entity::Custom(c) if c.id == id && c.type_ == T_FIT_TEST => Some(c.data.clone()), _ => None }).ok_or(OpError(format!("no fit test {id}")))?;
+            let src = v.get("patch").filter(|x| x.is_object()).unwrap_or(&v).clone();
+            let mut next = cur;
+            for (k, x) in src.as_object().into_iter().flatten() { if k != "id" { next[k] = x.clone(); } }
+            let mut ft: FitTest = serde_json::from_value(next).map_err(|e| OpError(format!("invalid fit test: {e}")))?;
+            if !(0.0..=0.002).contains(&ft.from) || !(0.0..=0.002).contains(&ft.to) { return err("the clearances must be 0–2 mm per side"); }
+            if ft.to < ft.from { std::mem::swap(&mut ft.from, &mut ft.to); }
+            if !(1..=12).contains(&ft.steps) { return err("a fit test has 1 to 12 steps"); }
+            custom_mut(doc, &id).unwrap().data = serde_json::to_value(&ft).unwrap();
+            res.modified.push(id);
+        }
+        "snap_to_anchor" => {
+            let pid = v.get("piece").and_then(|x| x.as_str()).ok_or(OpError("piece is required".into()))?.to_string();
+            let aid = v.get("anchor").and_then(|x| x.as_str()).ok_or(OpError("anchor is required".into()))?.to_string();
+            let at_end = v.get("at").and_then(|x| x.as_str()).unwrap_or("start") == "end";
+            let an = anchor_of(doc, &aid).ok_or(OpError(format!("no anchor {aid}")))?;
+            let mut lay = Layout::new(doc);
+            if !lay.map.contains_key(&pid) { return err(format!("no track piece {pid}")); }
+            let pose = if at_end { lay.path(&pid).unwrap().end } else { lay.start(&pid).unwrap() };
+            // the anchor points the way the new track runs: a chain that *ends* there arrives head-on
+            let want = if at_end { an.heading + 180.0 } else { an.heading };
+            // the head of this chain carries the whole chain: move that, the rest follows
+            let mut head = pid.clone();
+            let mut seen = HashSet::new();
+            while let Some(pv) = lay.map[&head].prev.clone().filter(|x| lay.map.contains_key(x) && seen.insert(head.clone())) { head = pv; }
+            let hp = lay.start(&head).unwrap();
+            let dh = want - pose.heading;
+            let (c, sn) = (dh.to_radians().cos(), dh.to_radians().sin());
+            // turn the chain about the matched end (in plan), then carry that end onto the anchor
+            let d = [hp.p[0] - pose.p[0], hp.p[1] - pose.p[1], hp.p[2] - pose.p[2]];
+            let (rx, rz) = (d[0] * c + d[2] * sn, -d[0] * sn + d[2] * c);
+            let same = head == pid && !at_end;
+            let hc = custom_mut(doc, &head).unwrap();
+            hc.data["start"] = json!([round6(an.start[0] + rx), round6(an.start[1] + d[1]), round6(an.start[2] + rz)]);
+            hc.data["heading"] = json!(round6(hp.heading + dh));
+            if same { hc.data["pitch"] = json!(round6(an.pitch)); }
+            hc.data.as_object_mut().unwrap().remove("prev");
+            res.modified.push(head);
+            if !same && (an.pitch - pose.pitch).abs() > 0.5 {
+                res.entities.push(info_entity(json!({ "warning": format!("The track meets the anchor at {:.1}° while the anchor is at {:.1}°: snapping matched the position and the heading, not the slope.", pose.pitch, an.pitch) })));
+            }
+        }
+        "fit_test" => {
+            let mut ft = FitTest { start: [0.0; 3], heading: 0.0, from: 0.00005, to: 0.00045, steps: 5 };
+            if let Some(st) = p3(&v, "start") { ft.start = st; }
+            if let Some(h) = f(&v, "heading") { ft.heading = h; }
+            if let Some(x) = f(&v, "from") { ft.from = x; }
+            if let Some(x) = f(&v, "to") { ft.to = x; }
+            if let Some(x) = v.get("steps").and_then(|x| x.as_u64()) { ft.steps = x as usize; }
+            if !(0.0..=0.002).contains(&ft.from) || !(0.0..=0.002).contains(&ft.to) { return err("the clearances must be 0–2 mm per side"); }
+            if ft.to < ft.from { std::mem::swap(&mut ft.from, &mut ft.to); }
+            if !(1..=12).contains(&ft.steps) { return err("a fit test has 1 to 12 steps"); }
+            res.created.push(push(doc, T_FIT_TEST, serde_json::to_value(&ft).unwrap()));
+            let r = real(doc);
+            if !r.measured {
+                res.entities.push(info_entity(json!({ "warning": "The real track has not been measured yet, so this coupon is sized on the plugin's guesses. Measure a real piece with calipers and run set_real first." })));
+            }
+        }
         "split_to_fit" => {
             let only: Option<HashSet<String>> = v.get("pieces").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
             split_to_fit(doc, only.as_ref(), plate_of(&v), &mut res)?;
@@ -349,8 +491,16 @@ fn info_entity(data: Value) -> Entity { Entity::Custom(Custom { id: "track.info"
 
 /// Print size in mm [width, depth, height] of a piece lying as modelled, turned in plan to take the least
 /// room (as the 3D print layout does).
-pub fn print_size(path: &Path, prof: &Profile, plate: [f64; 3]) -> [f64; 3] {
-    let pr = shape::profile(prof);
+pub fn print_size(path: &Path, prof: &Profile, plate: [f64; 3]) -> [f64; 3] { print_size_of(path, shape::profile(prof), plate) }
+
+/// The widest cross-section a piece passes through: an adapter changes over between two, so take both.
+pub fn section_of(p: &Piece, prof: &Profile, r: &Real) -> [[f64; 2]; 8] {
+    if p.kind != Kind::Adapter { return shape::profile(prof); }
+    shape::section(prof.width.max(r.width), prof.floor.max(r.floor), prof.wall.max(r.wall), prof.wall_thickness.min(r.wall_thickness))
+}
+
+/// `print_size` for a given cross-section.
+pub fn print_size_of(path: &Path, pr: [[f64; 2]; 8], plate: [f64; 3]) -> [f64; 3] {
     let pts: Vec<[f64; 3]> = path.frames.iter().flat_map(|fr| pr.iter().map(move |q| fr.at(q[0], q[1], 0.0))).collect();
     let (ylo, yhi) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
     let size = |a: f64| { let (c, s) = (a.cos(), a.sin()); let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -372,6 +522,7 @@ pub fn fits_plate(sz: [f64; 3], plate: [f64; 3]) -> bool {
 fn split_to_fit(doc: &mut Document, only: Option<&HashSet<String>>, plate: [f64; 3], res: &mut OpResult) -> Result<(), OpError> {
     let mut lay = Layout::new(doc);
     let prof = lay.prof.clone();
+    let real_t = real(doc);
     let mut ids: Vec<String> = lay.map.keys().filter(|k| only.is_none_or(|o| o.contains(*k))).cloned().collect(); ids.sort();
     let had_connectors = doc.entities.iter().any(|e| matches!(e, Entity::Custom(c) if c.type_ == T_CONNECTOR));
     let mut notes = vec![];
@@ -379,8 +530,9 @@ fn split_to_fit(doc: &mut Document, only: Option<&HashSet<String>>, plate: [f64;
         let p = lay.map[&id].clone();
         let start = lay.start(&id).unwrap();
         let path = path(&p, &prof, start);
-        if fits_plate(print_size(&path, &prof, plate), plate) { continue; }
+        if fits_plate(print_size_of(&path, section_of(&p, &prof, &real_t), plate), plate) { continue; }
         if p.kind == Kind::Loop { notes.push(format!("{} is too big for the plate and a loop can't be split: make its radius smaller", p.label())); continue; }
+        if p.kind == Kind::Adapter { notes.push(format!("{} is too big for the plate: an adapter changes over in one piece and can't be split, so make it shorter", p.label())); continue; }
         let mut done = None;
         for n in 2..=16usize {
             let parts: Vec<Piece> = match p.kind {
@@ -407,11 +559,11 @@ fn split_to_fit(doc: &mut Document, only: Option<&HashSet<String>>, plate: [f64;
                     }
                     out
                 }
-                Kind::Loop => unreachable!(),
+                Kind::Loop | Kind::Adapter => unreachable!(),
             };
             // every part must fit; check them chained from the original start
             let mut pose = start; let mut ok = true;
-            for q in &parts { let pp = shape::path(q, &prof, pose); if !fits_plate(print_size(&pp, &prof, plate), plate) { ok = false; break; } pose = pp.end; }
+            for q in &parts { let pp = shape::path(q, &prof, pose); if !fits_plate(print_size_of(&pp, section_of(q, &prof, &real_t), plate), plate) { ok = false; break; } pose = pp.end; }
             if ok { done = Some(parts); break; }
         }
         let Some(parts) = done else { notes.push(format!("{} could not be split to fit the plate", p.label())); continue; };
@@ -457,6 +609,7 @@ fn split_to_fit(doc: &mut Document, only: Option<&HashSet<String>>, plate: [f64;
 pub fn info(doc: &Document, plate: [f64; 3]) -> Value {
     let mut lay = Layout::new(doc);
     let prof = lay.prof.clone();
+    let rl = real(doc);
     let mut ids: Vec<String> = lay.map.keys().cloned().collect(); ids.sort();
     let mut warnings = vec![];
     let mut list = vec![];
@@ -464,10 +617,10 @@ pub fn info(doc: &Document, plate: [f64; 3]) -> Value {
         let p = lay.map[id].clone();
         let path = lay.path(id).unwrap();
         // print size of the channel, turned to take the least room on the plate
-        let pr = shape::profile(&prof);
+        let pr = section_of(&p, &prof, &rl);
         let mut hi = [f64::MIN; 3];
         for fr in &path.frames { for q in pr.iter() { let w = fr.at(q[0], q[1], 0.0); for k in 0..3 { hi[k] = hi[k].max(w[k]); } } }
-        let size = print_size(&path, &prof, plate);
+        let size = print_size_of(&path, pr, plate);
         if let Some(w) = &path.warning { warnings.push(format!("{}: {w}", p.label())); }
         list.push(json!({ "id": id, "label": p.label(), "kind": p.kind, "prev": p.prev, "length": round6(path.length), "sizeMm": size, "fits": fits_plate(size, plate),
             "start": path.frames[0].c, "end": path.end.p, "endHeading": round6(path.end.heading), "endPitch": round6(path.end.pitch), "maxHeight": round6(hi[1]) }));
@@ -483,8 +636,46 @@ pub fn info(doc: &Document, plate: [f64; 3]) -> Value {
         if !closed && gap < 0.05 && chain.len() > 2 { warnings.push(format!("The chain starting with {} almost closes: its end is {:.1} mm from its start (heading off by {:.1}°).", lay.map[&chain[0]].label(), gap * 1000.0, dh)); }
         chains.push(json!({ "pieces": chain, "length": round6(length), "closed": closed, "gapMm": (gap * 10000.0).round() / 10.0, "headingErrorDeg": (dh * 10.0).round() / 10.0 }));
     }
+    // every open end of a chain: where the layout could meet track that already exists
+    let mut open_ends: Vec<(String, bool, Pose)> = vec![];
+    for chain in chain_ids(&lay) {
+        let head = lay.path(&chain[0]).unwrap();
+        let tl = lay.path(chain.last().unwrap()).unwrap();
+        let closed = dist(head.frames[0].c, tl.end.p) < 0.002;
+        if !closed {
+            open_ends.push((chain[0].clone(), false, Pose { p: head.frames[0].c, heading: start_heading(&head.frames[0]), pitch: head.frames[0].t[1].clamp(-1.0, 1.0).asin().to_degrees() }));
+            open_ends.push((chain.last().unwrap().clone(), true, tl.end));
+        }
+    }
+    let mut anchor_list = vec![];
+    for (id, a) in anchors(doc) {
+        // the chain end nearest this anchor, if any is close enough to be meant for it
+        let best = open_ends.iter().map(|(pid, at_end, pose)| (dist(pose.p, a.start), pid, at_end, pose)).filter(|(d, ..)| *d < 0.25)
+            .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+        let m = best.map(|(d, pid, at_end, pose)| {
+            // an end runs *into* the anchor, so it points the other way: 180° off is spot on
+            let want = if *at_end { a.heading + 180.0 } else { a.heading };
+            let dh = ((pose.heading - want).rem_euclid(360.0) + 180.0).rem_euclid(360.0) - 180.0;
+            json!({ "piece": pid, "end": if *at_end { "end" } else { "start" }, "gapMm": (d * 10000.0).round() / 10.0, "headingErrorDeg": (dh * 10.0).round() / 10.0, "joined": d < 0.002 && dh.abs() < 1.0 })
+        });
+        let nm = a.name.clone().unwrap_or_else(|| "anchor".into());
+        if let Some(m) = &m {
+            if !m["joined"].as_bool().unwrap_or(false) {
+                warnings.push(format!("The track reaches {} but does not meet it: {} mm away, heading off by {}°. Snap it to the anchor.", nm, m["gapMm"], m["headingErrorDeg"]));
+            }
+        }
+        anchor_list.push(json!({ "id": id, "name": a.name, "start": a.start, "heading": round6(a.heading), "pitch": round6(a.pitch), "match": m }));
+    }
+    let adapters = lay.map.values().filter(|p| p.kind == Kind::Adapter).count();
+    if (adapters > 0 || !anchor_list.is_empty()) && !rl.measured {
+        warnings.push("The real track has not been measured: the adapter and the anchors use the plugin's guesses. Measure a real piece with calipers (set_real) and print a fit test before printing a whole layout.".into());
+    }
+    if !anchor_list.is_empty() && adapters == 0 {
+        warnings.push("There is an anchor on existing track but no adapter piece: a printed end does not join shop-bought track on its own.".into());
+    }
     let count = |t: &str| doc.entities.iter().filter(|e| matches!(e, Entity::Custom(c) if c.type_ == t)).count();
-    json!({ "profile": prof, "pieces": list, "chains": chains, "connectors": count(T_CONNECTOR), "supports": count(T_SUPPORT), "warnings": warnings })
+    json!({ "profile": prof, "real": rl, "pieces": list, "chains": chains, "anchors": anchor_list, "adapters": adapters,
+        "connectors": count(T_CONNECTOR), "supports": count(T_SUPPORT), "fitTests": count(T_FIT_TEST), "warnings": warnings })
 }
 fn start_heading(fr: &Frame) -> f64 { fwd_heading(fr.t) }
 
@@ -542,7 +733,9 @@ fn op(name: &str, description: &str, props: Value, required: &[&str]) -> PluginO
 }
 fn piece_props() -> Value {
     json!({
-        "kind": { "type": "string", "enum": ["straight", "curve", "ramp", "loop"], "description": "Piece type" },
+        "kind": { "type": "string", "enum": ["straight", "curve", "ramp", "loop", "adapter"], "description": "Piece type. `adapter` changes over from the printed channel to the measured real track (set_real), so a layout can join shop-bought track." },
+        "anchor": { "type": "string", "description": "Start on this anchor instead of chaining: the piece takes the anchor's place, heading and slope (the mouth of a garage, the end of real track)." },
+        "realEnd": { "type": "string", "enum": ["start", "end"], "description": "Adapter: which end is the real track's profile (default end)" },
         "after": { "type": "string", "description": "Chain onto the end of this piece id (\"last\" = the end of the most recent chain). Then start / heading / pitch come from it." },
         "insert": { "type": "boolean", "description": "With after: a piece already following it now follows the new one (default true)" },
         "start": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z] in metres: the start of the centreline on the underside of the floor (y = 0 on the ground)" },
@@ -562,7 +755,7 @@ fn piece_props() -> Value {
 impl Plugin for TrackPlugin {
     fn id(&self) -> &str { PLUGIN_ID }
     fn describe(&self) -> PluginInfo {
-        PluginInfo { id: PLUGIN_ID.into(), name: "Car Track".into(), entity_types: vec![T_PIECE.into(), T_CONNECTOR.into(), T_SUPPORT.into()], ops: vec![
+        PluginInfo { id: PLUGIN_ID.into(), name: "Car Track".into(), entity_types: vec![T_PIECE.into(), T_CONNECTOR.into(), T_SUPPORT.into(), T_ANCHOR.into(), T_FIT_TEST.into()], ops: vec![
             op("add_piece", "Add a track piece: a straight, curve, ramp or loop of the 1:64 die-cast channel (orange Hot Wheels-style track; profile in set_profile). With `after` it chains onto the end of that piece and follows it when it changes or moves. Every piece has a short straight lead at both ends where connector holes go. Returns the id in `created`, `measurement` = centreline length.", piece_props(), &[]),
             op("update_piece", "Change a piece: kind, length, radius, angle, rise, endPitch, offset, name, start / heading / pitch (a chained piece then comes loose), or prev (another piece id to chain onto, null to come loose where it is). Pieces after it follow.", json!({ "id": { "type": "string" }, "patch": { "type": "object", "properties": piece_props() } }), &["id"]),
             op("remove_pieces", "Remove pieces and their connectors and supports. With heal (default) the piece after a removed one chains onto the piece before it, so the gap closes; without, it stays where it is.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "heal": { "type": "boolean" } }), &["ids"]),
@@ -571,8 +764,14 @@ impl Plugin for TrackPlugin {
             op("add_support", "Add a support (foot, post and cradle) under a piece, `at` metres along it (or `t` 0–1). It follows the piece.", json!({ "piece": { "type": "string" }, "at": { "type": "number" }, "t": { "type": "number" } }), &["piece"]),
             op("auto_supports", "Put supports under raised track every `spacing` m (default 0.15) where it is at least `minHeight` (default 12 mm) up; earlier automatic supports of those pieces are replaced. Loops are skipped.", json!({ "pieces": { "type": "array", "items": { "type": "string" } }, "spacing": { "type": "number" }, "minHeight": { "type": "number" } }), &[]),
             op("split_to_fit", "Split pieces that don't fit the printer's build volume into shorter ones that do, keeping the track's shape: straights into equal straights, curves into smaller curves (radius chosen so the chain still ends in the same place, closed circuits stay closed), ramps at points along their own centreline. Supports and connectors move along; new joints get connectors when the track has any. Loops can't be split.", json!({ "pieces": { "type": "array", "items": { "type": "string" }, "description": "Only these (default all)" }, "plate": { "type": "array", "items": { "type": "number" }, "description": "Build volume [width, depth, height] in mm (default [256, 256, 256])" } }), &[]),
+            op("set_real", "Record the **real** track your layout joins — the shop-bought orange track of your garage — as measured with calipers (metres): width, floor, wall (top of the wall from the underside), wallThickness, holeLength / holeWidth (the rectangular hole in the real floor, along and across), holeInset (real end → hole centre) and fit (the play a printed peg needs in a real hole, per side — the fit test tells you which). Setting any measurement marks the real track as measured; until then adapters and anchors use the plugin's guesses and say so.", json!({ "width": { "type": "number" }, "floor": { "type": "number" }, "wall": { "type": "number" }, "wallThickness": { "type": "number" }, "holeLength": { "type": "number" }, "holeWidth": { "type": "number" }, "holeInset": { "type": "number" }, "fit": { "type": "number" }, "measured": { "type": "boolean" } }), &[]),
+            op("fit_test", "Add a calibration coupon: one small print that tells you the clearance the real track wants. It carries a row of pegs (a printed peg into a real hole) and a row of sockets (a real connector's peg into a printed hole), stepped from `from` to `to`, each labelled with its clearance in hundredths of a millimetre. Print it, try every step on a real piece, and put the one that clicks without play into set_real as `fit`.", json!({ "start": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z] in metres (default the origin)" }, "heading": { "type": "number" }, "from": { "type": "number", "description": "Smallest clearance per side in m (default 0.00005)" }, "to": { "type": "number", "description": "Largest (default 0.00045)" }, "steps": { "type": "integer", "description": "1–12 (default 5)" } }), &[]),
+            op("update_fit_test", "Change a fit test coupon: from, to (the clearances per side in metres), steps, start, heading.", json!({ "id": { "type": "string" }, "patch": { "type": "object", "properties": { "from": { "type": "number" }, "to": { "type": "number" }, "steps": { "type": "integer" }, "start": { "type": "array", "items": { "type": "number" } }, "heading": { "type": "number" } } } }), &["id"]),
+            op("add_anchor", "Add an anchor: where the layout meets track that already exists — the mouth of the garage, the end of a piece of shop-bought track. `heading` and `pitch` point the way the **new** track runs, away from the existing track. It is drawn as reference edges and never printed; `info` reports how far each chain end is from it.", json!({ "start": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z] in metres: the centre of the real floor's underside at the mouth" }, "heading": { "type": "number", "description": "Degrees in plan the new track runs (0 = +x, positive turns left)" }, "pitch": { "type": "number", "description": "Degrees up" }, "name": { "type": "string", "description": "e.g. \"Garage, second floor exit\"" } }), &[]),
+            op("update_anchor", "Move or rename an anchor: start, heading, pitch, name.", json!({ "id": { "type": "string" }, "patch": { "type": "object", "properties": { "start": { "type": "array", "items": { "type": "number" } }, "heading": { "type": "number" }, "pitch": { "type": "number" }, "name": { "type": "string" } } } }), &["id"]),
+            op("snap_to_anchor", "Carry a whole chain so that one end of `piece` lands exactly on an anchor: the chain is turned in plan and moved as one, keeping its shape. `at` picks which end of the piece meets the anchor (default start). The slope is matched only when that end is the head of the chain.", json!({ "piece": { "type": "string" }, "anchor": { "type": "string" }, "at": { "type": "string", "enum": ["start", "end"] } }), &["piece", "anchor"]),
             op("centreline", "The centreline of every chain of track, for simulating a car on it (the browser's Test drive uses it): per chain the frames [s, cx, cy, cz, tx, ty, tz, ux, uy, uz] (metres along the chain; centre of the floor's underside; forward; up out of the floor), its pieces with the stretch s0–s1 each covers, its length and whether it closes into a circuit. No change. In entities[0].data.", json!({}), &[]),
-            op("info", "The track: every piece (label, length, print size in mm turned to fit, whether it fits `plate`, start / end pose), the chains (length, whether they close into a circuit and the gap if not), connector and support counts, warnings. No change. In entities[0].data.", json!({ "plate": { "type": "array", "items": { "type": "number" }, "description": "Build volume in mm (default [256, 256, 256])" } }), &[]),
+            op("info", "The track: every piece (label, length, print size in mm turned to fit, whether it fits `plate`, start / end pose), the chains (length, whether they close into a circuit and the gap if not), the anchors with the chain end that reaches each one (gap and heading error), connector, support and adapter counts, warnings. No change. In entities[0].data.", json!({ "plate": { "type": "array", "items": { "type": "number" }, "description": "Build volume in mm (default [256, 256, 256])" } }), &[]),
         ] }
     }
     fn expand(&self, e: &Custom, doc: &Document) -> Result<Vec<Entity>, OpError> { Ok(expand(e, doc)) }
@@ -580,6 +779,18 @@ impl Plugin for TrackPlugin {
         apply(op_type.strip_prefix("track.").unwrap_or(op_type), data, doc)
     }
     fn transform(&self, e: &mut Custom, m: &Mat4, doc: &Document) -> Result<(), OpError> {
+        // an anchor or a coupon is placed, not chained: move the point and turn the heading
+        if e.type_ == T_ANCHOR || e.type_ == T_FIT_TEST {
+            let p = p3(&e.data, "start").unwrap_or([0.0; 3]);
+            let h = e.data.get("heading").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let pitch = e.data.get("pitch").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let t = normalize(mat_apply_dir(m, dir(h, pitch)));
+            let q = mat_apply(m, p);
+            e.data["start"] = json!([round6(q[0]), round6(q[1]), round6(q[2])]);
+            e.data["heading"] = json!(round6(fwd_heading(t)));
+            if e.type_ == T_ANCHOR { e.data["pitch"] = json!(round6(t[1].clamp(-1.0, 1.0).asin().to_degrees())); }
+            return Ok(());
+        }
         if e.type_ != T_PIECE { return Ok(()); } // connectors and supports follow their piece
         let mut p: Piece = serde_json::from_value(e.data.clone()).map_err(|x| OpError(x.to_string()))?;
         let s = Layout::new(doc).start(&e.id).unwrap_or(Pose { p: p.start, heading: p.heading, pitch: p.pitch });
@@ -602,7 +813,8 @@ impl Plugin for TrackPlugin {
         let ids: Vec<String> = lay.map.keys().cloned().collect();
         let length: f64 = ids.iter().filter_map(|i| lay.path(i)).map(|p| p.length).sum();
         let count = |t: &str| doc.entities.iter().filter(|e| matches!(e, Entity::Custom(c) if c.type_ == t)).count();
-        Some(json!({ "pieces": ids.len(), "connectors": count(T_CONNECTOR), "supports": count(T_SUPPORT), "length": round6(length) }))
+        let adapters = lay.map.values().filter(|p| p.kind == Kind::Adapter).count();
+        Some(json!({ "pieces": ids.len(), "adapters": adapters, "connectors": count(T_CONNECTOR), "supports": count(T_SUPPORT), "anchors": count(T_ANCHOR), "length": round6(length) }))
     }
     fn on_load(&self, doc: &mut Document) { if has_track(doc) || doc.extensions.contains_key(PLUGIN_ID) { ensure(doc); } }
 }

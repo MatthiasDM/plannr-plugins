@@ -7,9 +7,12 @@ pub const PLUGIN_ID: &str = "track";
 pub const T_PIECE: &str = "track.piece";
 pub const T_CONNECTOR: &str = "track.connector";
 pub const T_SUPPORT: &str = "track.support";
+pub const T_ANCHOR: &str = "track.anchor";
+pub const T_FIT_TEST: &str = "track.fitTest";
 pub const MAT_TRACK: &str = "Track";
 pub const MAT_CONNECTOR: &str = "Track connector";
 pub const MAT_SUPPORT: &str = "Track support";
+pub const MAT_TEST: &str = "Track fit test";
 
 /// The channel every piece shares. Metres. The defaults follow the orange 1:64 die-cast track (about
 /// 42 mm wide); measure yours and adjust, and print a short straight first to test the fit.
@@ -55,13 +58,52 @@ impl Profile {
     }
 }
 
+/// The **real** track this layout joins: the shop-bought orange track of your garage, as you measured it
+/// with calipers. It is never printed — it is what an [`Kind::Adapter`] piece mates with and what the fit
+/// test is sized against. `measured` stays false until someone has actually put a caliper on a piece, and
+/// everything that depends on these numbers says so while it is false.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Real {
+    /// Has someone measured a real piece? Until then these are the plugin's guesses.
+    pub measured: bool,
+    /// Outside width of the real channel.
+    pub width: f64,
+    /// Floor thickness.
+    pub floor: f64,
+    /// Top of the side wall, from the underside.
+    pub wall: f64,
+    pub wall_thickness: f64,
+    /// The rectangular hole in the real floor: along the track, and across it.
+    pub hole_length: f64,
+    pub hole_width: f64,
+    /// Real piece end → the centre of that hole.
+    pub hole_inset: f64,
+    /// The play a printed peg needs in a real hole (per side). The fit test is how you find it.
+    pub fit: f64,
+}
+impl Default for Real {
+    fn default() -> Self {
+        // the plugin's own die-cast guesses, flagged as unmeasured
+        let p = Profile::default();
+        Real { measured: false, width: p.width, floor: p.floor, wall: p.wall, wall_thickness: p.wall_thickness, hole_length: p.hole_length, hole_width: p.hole_width, hole_inset: p.hole_inset, fit: 0.00015 }
+    }
+}
+impl Real {
+    /// The real track as a channel profile, so the same sweep code can draw it.
+    pub fn as_profile(&self, base: &Profile) -> Profile {
+        Profile { width: self.width, floor: self.floor, wall: self.wall, wall_thickness: self.wall_thickness, hole_length: self.hole_length, hole_width: self.hole_width, hole_inset: self.hole_inset, ..base.clone() }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub enum Kind { #[default] Straight, Curve, Ramp, Loop }
+pub enum Kind { #[default] Straight, Curve, Ramp, Loop, Adapter }
 
 fn d_len() -> f64 { 0.2 }
 fn d_radius() -> f64 { 0.15 }
 fn d_angle() -> f64 { 90.0 }
+fn d_real_end() -> End { End::End }
 
 /// One printable piece. A chained piece (`prev`) starts where the previous one ends; its own `start`,
 /// `heading` and `pitch` are then a cache the plugin keeps up to date (used if `prev` disappears).
@@ -97,6 +139,9 @@ pub struct Piece {
     /// Loop: sideways shift between entry and exit (positive = left), default width + 4 mm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<f64>,
+    /// Adapter: which end is the real track's profile (the other is the printed one).
+    #[serde(default = "d_real_end")]
+    pub real_end: End,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,7 +156,7 @@ impl Piece {
     /// Length of the part between the leads.
     pub fn body_length(&self, prof: &Profile) -> f64 {
         match self.kind {
-            Kind::Straight | Kind::Ramp => self.length - 2.0 * self.lead(prof),
+            Kind::Straight | Kind::Ramp | Kind::Adapter => self.length - 2.0 * self.lead(prof),
             Kind::Curve => self.radius * self.angle.abs().to_radians(),
             Kind::Loop => self.radius * std::f64::consts::TAU,
         }
@@ -123,6 +168,7 @@ impl Piece {
             Kind::Curve => format!("Curve {:.0}° {} R{:.0}", self.angle.abs(), if self.angle >= 0.0 { "left" } else { "right" }, self.radius * 1000.0),
             Kind::Ramp => format!("Ramp {:+.0} mm", self.rise * 1000.0),
             Kind::Loop => format!("Loop R{:.0}", self.radius * 1000.0),
+            Kind::Adapter => format!("Adapter to real track ({})", if self.real_end == End::End { "real at the far end" } else { "real at the near end" }),
         }
     }
 }
@@ -143,3 +189,43 @@ pub struct Connector { pub piece: String, #[serde(default)] pub at: End }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Support { pub piece: String, pub at: f64, #[serde(default)] pub auto: bool }
+
+/// Where the layout meets track that already exists — the mouth of the garage, the end of a piece of
+/// shop-bought track. Reference only: it is drawn as guide edges and never printed. `heading` / `pitch`
+/// point the way the **new** track runs, away from the existing track.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Anchor {
+    #[serde(default)]
+    pub start: P3,
+    #[serde(default)]
+    pub heading: f64,
+    #[serde(default)]
+    pub pitch: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+fn d_from() -> f64 { 0.00005 }
+fn d_to() -> f64 { 0.00045 }
+fn d_steps() -> usize { 5 }
+
+/// The calibration coupon: one small print that tells you the clearance the real track wants. A row of
+/// pegs (printed peg → real hole) and a row of sockets (real peg → printed hole), each stepped from
+/// `from` to `to`, every one labelled with its clearance in hundredths of a millimetre.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitTest {
+    #[serde(default)]
+    pub start: P3,
+    #[serde(default)]
+    pub heading: f64,
+    /// Smallest clearance per side, in metres.
+    #[serde(default = "d_from")]
+    pub from: f64,
+    /// Largest clearance per side, in metres.
+    #[serde(default = "d_to")]
+    pub to: f64,
+    #[serde(default = "d_steps")]
+    pub steps: usize,
+}

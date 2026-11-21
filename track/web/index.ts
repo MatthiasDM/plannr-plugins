@@ -10,15 +10,18 @@ import { makeDrive } from './drive';
 const P = (window as any).plannr as { registerPlugin(p: Plugin): void; THREE: typeof THREE_NS; print3d?: { download(format: string, opts: any, name?: string): Promise<any>; settings: { plate: number[]; printer: string } } };
 const THREE = P.THREE;
 const ACCENT = '#ff7a1a';
-const T_PIECE = 'track.piece', T_CONN = 'track.connector', T_SUP = 'track.support';
+const T_PIECE = 'track.piece', T_CONN = 'track.connector', T_SUP = 'track.support', T_ANCHOR = 'track.anchor', T_FIT = 'track.fitTest';
 
-interface Piece { kind: 'straight' | 'curve' | 'ramp' | 'loop'; start: Vec3; heading: number; pitch: number; length: number; radius: number; angle: number; rise: number; endPitch: number; offset?: number; prev?: string; name?: string }
+interface Piece { kind: 'straight' | 'curve' | 'ramp' | 'loop' | 'adapter'; start: Vec3; heading: number; pitch: number; length: number; radius: number; angle: number; rise: number; endPitch: number; offset?: number; realEnd?: 'start' | 'end'; prev?: string; name?: string }
+interface Real { measured: boolean; width: number; floor: number; wall: number; wallThickness: number; holeLength: number; holeWidth: number; holeInset: number; fit: number }
+interface Anchor { start: Vec3; heading: number; pitch: number; name?: string }
+interface AnchorInfo { id: string; name?: string | null; start: Vec3; heading: number; pitch: number; match: { piece: string; end: 'start' | 'end'; gapMm: number; headingErrorDeg: number; joined: boolean } | null }
 interface Profile { preset: string; width: number; floor: number; wall: number; wallThickness: number; lead: number; holes: boolean; holeLength: number; holeWidth: number; holeInset: number; connectorThickness: number; clearance: number; segment: number }
-interface Info { pieces: { id: string; label: string; kind: string; prev?: string; length: number; sizeMm: [number, number, number]; fits: boolean; maxHeight: number }[]; chains: { pieces: string[]; length: number; closed: boolean; gapMm: number; headingErrorDeg: number }[]; connectors: number; supports: number; warnings: string[] }
+interface Info { real: Real; pieces: { id: string; label: string; kind: string; prev?: string; length: number; sizeMm: [number, number, number]; fits: boolean; maxHeight: number }[]; chains: { pieces: string[]; length: number; closed: boolean; gapMm: number; headingErrorDeg: number }[]; anchors: AnchorInfo[]; adapters: number; connectors: number; supports: number; fitTests: number; warnings: string[] }
 
 const KEY = 'plannr.track';
 const state = (() => {
-  const d = { straight: 200, radius: 150, angle: 90, rise: 40, rampLength: 300, loopRadius: 90, showInfo: true, profileOpen: false };
+  const d = { straight: 200, radius: 150, angle: 90, rise: 40, rampLength: 300, loopRadius: 90, adapterLength: 60, showInfo: true, profileOpen: false, realOpen: false };
   try { return { ...d, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }; } catch { return d; }
 })();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage blocked */ } };
@@ -30,6 +33,8 @@ const esc = (s: string) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<
 const top = (op: string, data: unknown): Op => ({ op: 'custom', type: `track.${op}`, data } as Op);
 const customs = (doc: Document, type: string) => doc.entities.filter((e): e is CustomEntity => e.kind === 'custom' && e.type === type);
 const pieceOf = (e: CustomEntity) => e.data as Piece;
+const REAL_D: Real = { measured: false, width: 0.042, floor: 0.002, wall: 0.008, wallThickness: 0.002, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, fit: 0.00015 };
+const realOf = (doc: Document): Real => ({ ...REAL_D, ...(((doc.extensions?.track as any)?.real) ?? {}) });
 const profile = (doc: Document): Profile => ({ preset: 'die-cast', width: 0.042, floor: 0.002, wall: 0.008, wallThickness: 0.002, lead: 0.02, holes: true, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, connectorThickness: 0.0016, clearance: 0.0002, segment: 0.008, ...(((doc.extensions?.track as any)?.profile) ?? {}) });
 const mm = (m: number) => +(m * 1000).toFixed(1);
 const isTrack = (doc: Document, id: string) => doc.entities.some(e => e.id === id && e.kind === 'custom' && e.type.startsWith('track.'));
@@ -40,6 +45,7 @@ function label(p: Piece): string {
     case 'curve': return `Curve ${Math.abs(p.angle)}° ${p.angle >= 0 ? 'left' : 'right'} R${mm(p.radius)}`;
     case 'ramp': return `Ramp ${p.rise >= 0 ? '+' : ''}${mm(p.rise)} mm`;
     case 'loop': return `Loop R${mm(p.radius)}`;
+    case 'adapter': return `Adapter to real track`;
   }
 }
 /** The piece a new one chains onto: the selected piece, else the end of the most recent chain. */
@@ -63,6 +69,7 @@ const PALETTE: { id: string; label: string; title: string; data: () => Record<st
   { id: 'right', label: 'Curve ⟳', title: 'A curve turning right', data: () => ({ kind: 'curve', radius: state.radius / 1000, angle: -Math.abs(state.angle) }), icon: '<path d="M19 20V13a8 8 0 0 0-8-8H5" stroke-width="4" fill="none"/>' },
   { id: 'up', label: 'Ramp up', title: 'Up by the rise below, level at both ends', data: () => ({ kind: 'ramp', length: state.rampLength / 1000, rise: Math.abs(state.rise) / 1000 }), icon: '<path d="M3 19h5c5 0 6-10 11-10h2" stroke-width="4" fill="none"/>' },
   { id: 'down', label: 'Ramp down', title: 'Down by the rise below, level at both ends', data: () => ({ kind: 'ramp', length: state.rampLength / 1000, rise: -Math.abs(state.rise) / 1000 }), icon: '<path d="M3 9h2c5 0 6 10 11 10h5" stroke-width="4" fill="none"/>' },
+  { id: 'adapter', label: 'Adapter', title: 'A piece that changes over from the printed channel to the real track you measured, so the layout can join shop-bought track', data: () => ({ kind: 'adapter', length: state.adapterLength / 1000 }), icon: '<path d="M3 8v8M3 12h7m4 0h7M21 6v12" stroke-width="3" fill="none"/>' },
   { id: 'loop', label: 'Loop', title: 'A loop-the-loop of the radius below; its exit is shifted sideways so it passes its entry', data: () => ({ kind: 'loop', radius: state.loopRadius / 1000 }), icon: '<path d="M2 20h9a6 6 0 1 0-6-6v6m6 0h11" stroke-width="3" fill="none"/>' },
 ];
 
@@ -114,6 +121,35 @@ const layTool: LayTool = {
   onKey(ev, ctx) { if (ev.key === 'Escape' && this.start) { this.start = null; this.shown = ''; ctx.preview([]); ctx.scene.clearOverlay(); return true; } return false; },
 };
 
+/** Anchor: click the mouth of the existing track, then click the way the new track should run. */
+type AnchorTool = Tool & { start: V3 | null };
+const anchorTool: AnchorTool = {
+  id: 'tr-anchor', label: 'Anchor on existing track', cursor: 'crosshair', start: null,
+  hint: 'Click where the track you already own ends — the mouth of the garage — then click the way the new track should run from there. The anchor is reference only: it is never printed.',
+  icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 7v10M4 12h10" stroke="#1f5fd6" stroke-width="2.4"/><path d="m13 8 5 4-5 4z" fill="#1f5fd6" stroke="none"/></svg>`,
+  activate(ctx) { this.start = null; ctx.setHint(this.hint); },
+  deactivate(ctx) { this.start = null; ctx.scene.clearOverlay(); },
+  onMove(ev, ctx) {
+    const s = ctx.snap(ev, { plane: GROUND_PLANE(), from: this.start ?? undefined, lock: ctx.lock, ignoreIf: id => !ctx.inDocument(id) });
+    ctx.scene.clearOverlay(); ctx.scene.addDot(s.point, 0x1f5fd6, 8);
+    if (this.start) { ctx.scene.addDot(this.start, 0x1f5fd6, 8); ctx.scene.addLabel(this.start.clone().lerp(s.point, 0.5), 'the way the new track runs'); }
+  },
+  async onDown(ev, ctx) {
+    if (ev.button !== 0) return;
+    const s = ctx.snap(ev, { plane: GROUND_PLANE(), from: this.start ?? undefined, lock: ctx.lock, ignoreIf: id => !ctx.inDocument(id) });
+    if (!this.start) { this.start = s.point.clone(); return; }
+    const d = s.point.clone().sub(this.start); const flat = d.clone().setY(0);
+    const heading = flat.length() < 1e-6 ? 0 : +(Math.atan2(-flat.z, flat.x) * 180 / Math.PI).toFixed(3);
+    const pitch = flat.length() < 1e-6 ? 0 : +(Math.atan2(d.y, flat.length()) * 180 / Math.PI).toFixed(3);
+    const p = this.start;
+    this.start = null; ctx.scene.clearOverlay();
+    const r = await ctx.ops([top('add_anchor', { start: [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4)], heading, pitch })], 'Add anchor');
+    const id = r[0]?.created?.[0]; if (id) ctx.select([id]);
+    ctx.setTool('select'); ctx.toast('Anchor placed. Measure your real track in the Car Track panel, then start a piece on the anchor.');
+  },
+  onKey(ev, ctx) { if (ev.key === 'Escape' && this.start) { this.start = null; ctx.scene.clearOverlay(); return true; } return false; },
+};
+
 // ---- panel --------------------------------------------------------------------------------------
 async function refreshInfo(ctx: ToolContext, force = false) {
   const v = ctx.doc().version; const pk = JSON.stringify(plateOf());
@@ -129,17 +165,20 @@ const plateOf = (): number[] => (P.print3d?.settings as any) ? (() => { const s:
 const fits = (s: number[], pl: number[]) => s[2] <= pl[2] && ((s[0] <= pl[0] && s[1] <= pl[1]) || (s[1] <= pl[0] && s[0] <= pl[1]));
 
 function panel(ctx: ToolContext, el: HTMLElement) {
-  const doc = ctx.doc(); const prof = profile(doc); const ps = customs(doc, T_PIECE);
+  const doc = ctx.doc(); const prof = profile(doc); const ps = customs(doc, T_PIECE); const rl = realOf(doc);
   refreshInfo(ctx);
   const a = anchor(ctx); const anchorPiece = a && a !== 'last' ? ps.find(p => p.id === a) : null;
   const pl = plateOf();
   const num = (k: string, v: number, lbl: string, step = 1, unit = 'mm') => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-st="${k}" value="${v}" style="width:72px"><span class="muted" style="align-self:center">${unit}</span></div>`;
+  const rf = (k: keyof Real, lbl: string, step = 0.1) => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-rf="${k}" value="${mm(rl[k] as number)}" style="width:72px"><span class="muted" style="align-self:center">mm</span></div>`;
   const pf = (k: keyof Profile, lbl: string) => `<label>${lbl}</label><div class="row"><input type="number" step="0.1" data-pf="${k}" value="${mm(prof[k] as number)}" style="width:72px"><span class="muted" style="align-self:center">mm</span></div>`;
   el.innerHTML = `
     <div class="muted" style="margin:4px 0 6px;font-size:11px">${ps.length ? (anchorPiece ? `Next piece goes after <b>${esc(label(pieceOf(anchorPiece)))}</b>` : 'Next piece goes on the end of the last chain') : 'No track yet: the first piece starts at the origin, heading along red (or use Lay track)'}</div>
     <div class="track-palette" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">${PALETTE.map(p => `<button class="btn" data-add="${p.id}" title="${esc(p.title)}" style="justify-content:center;flex-direction:column;padding:6px 2px;gap:2px"><svg viewBox="0 0 24 24" width="22" height="22" stroke="${ACCENT}" stroke-linecap="round">${p.icon}</svg><span style="font-size:11px">${p.label}</span></button>`).join('')}</div>
     <div class="kv" style="margin-top:8px">${num('straight', state.straight, 'Straight length', 10)}${num('radius', state.radius, 'Curve radius', 5)}${num('angle', state.angle, 'Curve angle', 15, '°')}${num('rise', state.rise, 'Ramp rise', 5)}${num('rampLength', state.rampLength, 'Ramp length', 10)}${num('loopRadius', state.loopRadius, 'Loop radius', 5)}</div>
     <div class="btn-row"><button class="btn" data-act="drive" title="Put a car on the track and see whether it makes it round: loops, ramps, jumps (Test drive tool)" ${ps.length ? '' : 'disabled'}>▶ Test drive</button></div>
+    ${realHtml(rl)}
+    ${anchorsHtml(info, doc)}
     <div class="btn-row"><button class="btn" data-act="connectors" title="A connector under every joint between pieces (prints separately, in blue)">+ Connectors</button><button class="btn" data-act="supports" title="Supports under raised track every 15 cm">+ Supports</button><button class="btn primary" data-act="print" title="Download every piece, connector and support as one 3MF, laid out on the plate">Print all (3MF)</button></div>
     ${info ? infoHtml(info, pl) : ''}
     <details style="margin-top:10px" ${state.profileOpen ? 'open' : ''} data-details><summary class="muted" style="font-size:11px;cursor:default">Track profile · ${esc(prof.preset)} · ${mm(prof.width)} mm wide</summary>
@@ -156,6 +195,21 @@ function panel(ctx: ToolContext, el: HTMLElement) {
   el.querySelector<HTMLElement>('[data-act="connectors"]')!.onclick = async () => { const r = await ctx.ops([top('add_connectors', {})], 'Add connectors'); const n = r[0]?.created?.length ?? 0; ctx.toast(n ? `${n} connector${n === 1 ? '' : 's'} added under the joints` : 'Every joint already has a connector'); };
   el.querySelector<HTMLElement>('[data-act="supports"]')!.onclick = async () => { const r = await ctx.ops([top('auto_supports', {})], 'Add supports'); const n = r[0]?.created?.length ?? 0; ctx.toast(n ? `${n} support${n === 1 ? '' : 's'} under the raised track` : 'No track is raised enough to need supports'); };
   el.querySelector<HTMLElement>('[data-act="print"]')!.onclick = () => printAll(ctx);
+  el.querySelector<HTMLElement>('[data-real]')!.addEventListener('toggle', e => { state.realOpen = (e.target as HTMLDetailsElement).open; save(); });
+  el.querySelectorAll<HTMLInputElement>('[data-rf]').forEach(i => i.onchange = () => { const v = parseFloat(i.value) / 1000; if (isFinite(v)) ctx.ops([top('set_real', { [i.dataset.rf!]: v })], 'Measure the real track').catch(x => ctx.toast(x.message)); });
+  el.querySelector<HTMLElement>('[data-act="fittest"]')!.onclick = async () => {
+    try { const r = await ctx.ops([top('fit_test', { start: couponSpot(ctx) })], 'Fit test coupon'); const id = r[0]?.created?.[0]; if (id) ctx.select([id]);
+      const w = (r[0]?.entities?.[0]?.data as any)?.warning; ctx.toast(w ?? 'Coupon added. Print it, try each step on a real piece, and enter the one that clicks as the play per side.'); }
+    catch (e: any) { ctx.toast(e.message ?? String(e)); }
+  };
+  el.querySelector<HTMLElement>('[data-act="printfit"]')!.onclick = () => printFitTest(ctx);
+  el.querySelectorAll<HTMLElement>('[data-anchor]').forEach(r => r.onclick = () => ctx.select([r.dataset.anchor!]));
+  el.querySelectorAll<HTMLElement>('[data-snap]').forEach(b => b.onclick = async ev => {
+    ev.stopPropagation();
+    try { const r = await ctx.ops([top('snap_to_anchor', { anchor: b.dataset.snap, piece: b.dataset.snapPiece, at: b.dataset.snapAt })], 'Snap to anchor');
+      const w = (r[0]?.entities?.[0]?.data as any)?.warning; ctx.toast(w ?? 'The chain now meets the anchor.'); }
+    catch (e: any) { ctx.toast(e.message ?? String(e)); }
+  });
   el.querySelector<HTMLElement>('[data-act="drive"]')!.onclick = () => ctx.setTool('tr-drive');
   el.querySelector<HTMLElement>('[data-act="split"]')?.addEventListener('click', async () => {
     try { const r = await ctx.ops([top('split_to_fit', { plate: plateOf() })], 'Split to fit the printer'); const n = r[0]?.created?.filter(id => customs(ctx.doc(), T_PIECE).some(p => p.id === id)).length ?? 0; const w = (r[0]?.entities?.[0]?.data as any)?.warning; ctx.toast(w ?? (n ? `${n} piece${n === 1 ? '' : 's'} added by splitting` : 'Everything fits already')); }
@@ -163,6 +217,32 @@ function panel(ctx: ToolContext, el: HTMLElement) {
   });
   el.querySelectorAll<HTMLElement>('[data-piece]').forEach(r => r.onclick = () => ctx.select([r.dataset.piece!]));
 }
+/** The measured real track, and how to find the clearance it wants. */
+function realHtml(rl: Real) {
+  const r = (k: keyof Real, lbl: string, step = 0.1) => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-rf="${k}" value="${mm(rl[k] as number)}" style="width:72px"><span class="muted" style="align-self:center">mm</span></div>`;
+  return `<details style="margin-top:8px" ${state.realOpen ? 'open' : ''} data-real>
+    <summary class="muted" style="font-size:11px;cursor:default">Real track · ${rl.measured ? `measured, ${mm(rl.width)} mm wide, ${mm(rl.fit)} mm play` : '<b style="color:#b06d00">not measured yet</b>'}</summary>
+    <div class="muted" style="font-size:11px;margin:4px 0 6px">The track you already own, as a caliper reads it. The adapter piece and the anchors are sized on these numbers${rl.measured ? '.' : ', and until you measure a real piece they are only the plugin\'s guesses.'}</div>
+    <div class="kv">${r('width', 'Outside width')}${r('floor', 'Floor thickness')}${r('wall', 'Wall height')}${r('wallThickness', 'Wall thickness')}${r('holeLength', 'Floor hole, along')}${r('holeWidth', 'Floor hole, across')}${r('holeInset', 'Hole from the end')}${r('fit', 'Play per side', 0.01)}</div>
+    <div class="btn-row"><button class="btn" data-act="fittest" title="Add a small coupon that prints a row of pegs and a row of sockets at stepped clearances: try them on a real piece and keep the one that clicks">Fit test coupon</button><button class="btn" data-act="printfit" title="Download just the coupon as 3MF">Print coupon</button></div>
+    <div class="muted" style="font-size:11px;margin-top:4px">Print the coupon, try every step on a real piece, and put the clearance that clicks without play into <b>Play per side</b>.</div></details>`;
+}
+
+/** Where the layout meets track that already exists, and how close it comes. */
+function anchorsHtml(i: Info | null, doc: Document) {
+  const list = customs(doc, T_ANCHOR);
+  if (!list.length) return `<div class="muted" style="font-size:11px;margin-top:8px">No anchor on existing track yet — use <b>Anchor on existing track</b> to mark where your garage ends.</div>`;
+  const byId = new Map((i?.anchors ?? []).map(a => [a.id, a]));
+  return `<div class="muted" style="margin:10px 0 4px;font-size:11px">Existing track</div>` + list.map(e => {
+    const a = e.data as Anchor; const m = byId.get(e.id)?.match ?? null;
+    const name = a.name?.trim() || 'Anchor';
+    const note = !m ? '<span class="muted">nothing reaches it</span>'
+      : m.joined ? '<b style="color:#1e8e3e">joined</b>'
+      : `<span style="color:#b06d00">${m.gapMm.toFixed(0)} mm off, ${m.headingErrorDeg.toFixed(0)}°</span>`;
+    return `<div class="list-row" data-anchor="${e.id}"><span class="swatch" style="background:#1f5fd6"></span><span class="name">${esc(name)} <span class="muted">·</span> ${note}</span>${m && !m.joined ? `<button class="btn" data-snap="${e.id}" data-snap-piece="${m.piece}" data-snap-at="${m.end}" title="Carry the whole chain so this end lands exactly on the anchor">Snap</button>` : ''}</div>`;
+  }).join('');
+}
+
 function infoHtml(i: Info, pl: number[]) {
   const byId = new Map(i.pieces.map(p => [p.id, p]));
   const chains = i.chains.map((c, n) => `<div class="muted" style="margin:10px 0 4px;font-size:11px">Track ${i.chains.length > 1 ? n + 1 : ''} · ${c.pieces.length} piece${c.pieces.length === 1 ? '' : 's'} · ${(c.length * 100).toFixed(0)} cm${c.closed ? ' · <b style="color:#1e8e3e">closed circuit</b>' : c.pieces.length > 2 && c.gapMm < 300 ? ` · ends ${c.gapMm.toFixed(0)} mm from the start` : ''}</div>` +
@@ -170,8 +250,25 @@ function infoHtml(i: Info, pl: number[]) {
   const big = i.pieces.filter(p => !(p.fits ?? fits(p.sizeMm, pl))).length;
   return chains + (big ? `<div style="margin-top:6px;font-size:11px;color:#b06d00">⚠ ${big} piece${big === 1 ? ' is' : 's are'} too big for the ${pl[0]}×${pl[1]}×${pl[2]} mm printer <button class="btn" data-act="split" title="Split them into shorter pieces that fit, keeping the track's shape (closed circuits stay closed)">Split to fit</button></div>` : '') + `<div class="muted" style="font-size:11px;margin-top:6px">${i.connectors} connectors · ${i.supports} supports · printer from the 3D Print panel</div>` + i.warnings.map(w => `<div class="muted" style="font-size:11px;margin-top:4px;color:#b06d00">⚠ ${esc(w)}</div>`).join('');
 }
+/** Somewhere clear of the track for a new coupon: just beyond everything laid so far. */
+function couponSpot(ctx: ToolContext): [number, number, number] {
+  const doc = ctx.doc(); let z = 0;
+  for (const e of customs(doc, T_PIECE)) { const p = pieceOf(e); z = Math.min(z, p.start[2]); }
+  return [0, 0, +(z - 0.15).toFixed(3)];
+}
+
+async function printFitTest(ctx: ToolContext) {
+  const ids = customs(ctx.doc(), T_FIT).map(e => e.id);
+  if (!ids.length) { ctx.toast('No fit test coupon yet — add one first'); return; }
+  if (!P.print3d) { ctx.toast('The 3D Print plugin is not loaded'); return; }
+  try { const r = await P.print3d.download('3mf', { ids, scale: 1, arrange: true, merge: false }, 'track-fit-test.3mf'); if (r) ctx.toast('track-fit-test.3mf saved · print it at the settings you will use for the track'); }
+  catch (e: any) { ctx.toast(`Export failed: ${e.message ?? e}`); }
+}
+
 async function printAll(ctx: ToolContext) {
-  const doc = ctx.doc(); const ids = doc.entities.filter(e => e.kind === 'custom' && e.type.startsWith('track.')).map(e => e.id);
+  const doc = ctx.doc();
+  // anchors carry no faces and the coupon is not part of the layout: both stay out of the layout print
+  const ids = doc.entities.filter(e => e.kind === 'custom' && e.type.startsWith('track.') && e.type !== T_ANCHOR && e.type !== T_FIT).map(e => e.id);
   if (!ids.length) { ctx.toast('No track to print yet'); return; }
   if (!P.print3d) { ctx.toast('The 3D Print plugin is not loaded'); return; }
   try {
@@ -184,6 +281,43 @@ async function printAll(ctx: ToolContext) {
 function renderEntity(ctx: ToolContext, e: Entity, el: HTMLElement): boolean {
   if (e.kind !== 'custom' || !e.type.startsWith('track.')) return false;
   const doc = ctx.doc();
+  if (e.type === T_ANCHOR) {
+    const a = e.data as Anchor; const m = info?.anchors?.find(x => x.id === e.id)?.match ?? null;
+    const n = (k: string, v: number, lbl: string, step = 1, unit = 'mm', scale = 1000) => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-af="${k}" data-scale="${scale}" value="${+(v * scale).toFixed(2)}" style="width:80px"><span class="muted" style="align-self:center">${unit}</span></div>`;
+    el.innerHTML = `<div class="kv"><label>Type</label><div><b>Anchor on existing track</b></div>
+      <label>Name</label><input type="text" data-af="name" value="${esc(a.name ?? '')}" placeholder="Garage exit">
+      ${n('x', a.start[0], 'X', 10)}${n('y', a.start[1], 'Height', 10)}${n('z', a.start[2], 'Z', 10)}${n('heading', a.heading, 'Heading', 15, '°', 1)}${n('pitch', a.pitch, 'Slope', 5, '°', 1)}</div>
+      <div class="muted" style="font-size:11px;margin-top:6px">The mouth of the track you already own. Heading and slope point the way the <b>new</b> track runs from here. Reference only — it is never printed.</div>
+      <div style="font-size:11px;margin-top:6px">${m ? (m.joined ? '<b style="color:#1e8e3e">The track meets it.</b>' : `<span style="color:#b06d00">The track reaches it ${m.gapMm.toFixed(1)} mm away, heading off by ${m.headingErrorDeg.toFixed(1)}°.</span>`) : '<span class="muted">No chain end reaches it yet.</span>'}</div>
+      <div class="btn-row">${m && !m.joined ? '<button class="btn" data-snap>Snap the chain to it</button>' : ''}<button class="btn" data-begin>Start a piece here</button><button class="btn" data-erase>Erase</button></div>`;
+    el.querySelectorAll<HTMLInputElement>('[data-af]').forEach(inp => inp.onchange = () => {
+      const k = inp.dataset.af!; let patch: any;
+      if (k === 'name') patch = { name: inp.value || null };
+      else { const v = parseFloat(inp.value) / parseFloat(inp.dataset.scale ?? '1'); if (!isFinite(v)) return;
+        patch = 'xyz'.includes(k) ? { start: a.start.map((c, i) => i === 'xyz'.indexOf(k) ? v : c) } : { [k]: v }; }
+      ctx.ops([top('update_anchor', { id: e.id, patch })], 'Anchor').catch(x => ctx.toast(x.message));
+    });
+    el.querySelector<HTMLElement>('[data-snap]')?.addEventListener('click', () => ctx.ops([top('snap_to_anchor', { anchor: e.id, piece: m!.piece, at: m!.end })], 'Snap to anchor').catch(x => ctx.toast(x.message)));
+    el.querySelector<HTMLElement>('[data-begin]')!.onclick = () => addPiece(ctx, { kind: 'adapter', length: state.adapterLength / 1000, realEnd: 'start', anchor: e.id }, 'Adapter at the anchor');
+    el.querySelector<HTMLElement>('[data-erase]')!.onclick = () => ctx.ops([{ op: 'erase', ids: [e.id] }], 'Erase').then(() => ctx.select([]));
+    return true;
+  }
+  if (e.type === T_FIT) {
+    const d: any = e.data; const rl = realOf(doc);
+    const n = (k: string, v: number, lbl: string, step: number, scale: number, unit: string) => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-tf="${k}" data-scale="${scale}" value="${+(v * scale).toFixed(2)}" style="width:80px"><span class="muted" style="align-self:center">${unit}</span></div>`;
+    el.innerHTML = `<div class="kv"><label>Type</label><div><b>Fit test coupon</b></div>
+      ${n('from', d.from ?? 0.00005, 'Smallest play', 0.01, 1000, 'mm')}${n('to', d.to ?? 0.00045, 'Largest play', 0.01, 1000, 'mm')}
+      <label>Steps</label><div class="row"><input type="number" step="1" data-tf="steps" data-scale="1" value="${d.steps ?? 5}" style="width:80px"></div></div>
+      <div class="muted" style="font-size:11px;margin-top:6px">Each step has a peg (printed peg → real hole) and a socket (real peg → printed hole), with its play in hundredths of a millimetre raised beside it. Print it at the settings you will use for the track${rl.measured ? '' : ' — but measure a real piece first, or it is sized on guesses'}.</div>
+      <div class="btn-row"><button class="btn" data-print>Print coupon</button><button class="btn" data-erase>Erase</button></div>`;
+    el.querySelectorAll<HTMLInputElement>('[data-tf]').forEach(inp => inp.onchange = () => {
+      const v = parseFloat(inp.value) / parseFloat(inp.dataset.scale ?? '1'); if (!isFinite(v)) return;
+      ctx.ops([top('update_fit_test', { id: e.id, patch: { [inp.dataset.tf!]: inp.dataset.tf === 'steps' ? Math.round(v) : v } })], 'Fit test').catch(x => ctx.toast(x.message));
+    });
+    el.querySelector<HTMLElement>('[data-print]')!.onclick = () => printFitTest(ctx);
+    el.querySelector<HTMLElement>('[data-erase]')!.onclick = () => ctx.ops([{ op: 'erase', ids: [e.id] }], 'Erase').then(() => ctx.select([]));
+    return true;
+  }
   if (e.type !== T_PIECE) {
     const d: any = e.data; const host = customs(doc, T_PIECE).find(p => p.id === d.piece);
     el.innerHTML = `<div class="kv"><label>Type</label><div><b>${e.type === T_CONN ? 'Connector' : 'Support'}</b></div><label>Under</label><div>${host ? esc(label(pieceOf(host))) : '—'}${e.type === T_CONN ? ` (${d.at === 'end' ? 'end' : 'start'})` : ` at ${mm(d.at)} mm`}</div></div>
@@ -195,14 +329,16 @@ function renderEntity(ctx: ToolContext, e: Entity, el: HTMLElement): boolean {
   }
   const p = pieceOf(e); const prev = p.prev ? customs(doc, T_PIECE).find(x => x.id === p.prev) : null;
   const n = (k: string, v: number, lbl: string, step = 1, unit = 'mm', scale = 1000) => `<label>${lbl}</label><div class="row"><input type="number" step="${step}" data-f="${k}" data-scale="${scale}" value="${+(v * scale).toFixed(2)}" style="width:80px"><span class="muted" style="align-self:center">${unit}</span></div>`;
-  let body = `<div class="kv"><label>Type</label><select data-f="kind">${['straight', 'curve', 'ramp', 'loop'].map(k => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)}</option>`).join('')}</select>
+  let body = `<div class="kv"><label>Type</label><select data-f="kind">${['straight', 'curve', 'ramp', 'loop', 'adapter'].map(k => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)}</option>`).join('')}</select>
     <label>Name</label><input type="text" data-f="name" value="${esc(p.name ?? '')}" placeholder="${esc(label({ ...p, name: undefined }))}">`;
   if (p.kind === 'straight') body += n('length', p.length, 'Length', 10);
   if (p.kind === 'curve') body += n('radius', p.radius, 'Radius', 5) + n('angle', Math.abs(p.angle), 'Angle', 15, '°', 1) + `<label>Turns</label><select data-f="direction"><option value="left" ${p.angle >= 0 ? 'selected' : ''}>left</option><option value="right" ${p.angle < 0 ? 'selected' : ''}>right</option></select>`;
   if (p.kind === 'ramp') body += n('length', p.length, 'Length', 10) + n('rise', p.rise, 'Rise', 5) + n('endPitch', p.endPitch, 'End pitch', 5, '°', 1);
   if (p.kind === 'loop') body += n('radius', p.radius, 'Radius', 5) + n('offset', p.offset ?? profile(doc).width + 0.004, 'Side shift', 1);
+  if (p.kind === 'adapter') body += n('length', p.length, 'Length', 10) + `<label>Real end</label><select data-f="realEnd"><option value="end" ${(p.realEnd ?? 'end') === 'end' ? 'selected' : ''}>far end</option><option value="start" ${p.realEnd === 'start' ? 'selected' : ''}>near end</option></select>`;
   body += `<label>Follows</label><div>${prev ? `<a href="#" data-prev>${esc(label(pieceOf(prev)))}</a>` : '<span class="muted">nothing (placed on its own)</span>'}</div>`;
   if (!prev) body += n('heading', p.heading, 'Heading', 15, '°', 1) + n('pitch', p.pitch, 'Pitch', 5, '°', 1);
+  if (p.kind === 'adapter') body += `<label>Real track</label><div>${realOf(doc).measured ? `${mm(realOf(doc).width)} mm wide, measured` : '<span style="color:#b06d00">not measured yet</span>'}</div>`;
   body += `</div><div class="muted" style="font-size:11px;margin-top:6px">Pieces after it follow when it changes. The pieces in the Car Track panel go on the end of the selected piece.</div>
     <div class="btn-row"><button class="btn" data-remove title="Remove it; the next piece joins up with the one before">Remove &amp; close gap</button>${prev ? '<button class="btn" data-detach title="Keep it where it is, no longer following the piece before">Detach</button>' : ''}<button class="btn" data-support>+ Support here</button></div>`;
   el.innerHTML = body;
@@ -220,8 +356,8 @@ function renderEntity(ctx: ToolContext, e: Entity, el: HTMLElement): boolean {
 }
 
 P.registerPlugin({
-  id: 'track', name: 'Car Track', version: '0.2.0', accent: ACCENT,
-  tools: [layTool, drive.tool], toolbar: [['tr-lay', 'tr-drive']],
+  id: 'track', name: 'Car Track', version: '0.3.0', accent: ACCENT,
+  tools: [layTool, anchorTool, drive.tool], toolbar: [['tr-lay', 'tr-anchor', 'tr-drive']],
   panels: [{ id: 'main', title: 'Car Track', render: panel }],
   renderEntity,
   /** Moving a whole chain: only the pieces whose predecessor stays put move, the rest follow them. */
