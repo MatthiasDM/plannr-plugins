@@ -16,10 +16,10 @@ on each side (a U-channel), open on top.
 
 | field | die-cast (default) | |
 |---|---|---|
-| `width` | 0.042 | outside width (orange track is about 42 mm) |
+| `width` | 0.0381 | outside width (1½ in: the orange track's own width) |
 | `floor` | 0.002 | floor thickness |
-| `wall` | 0.008 | wall height from the underside |
-| `wallThickness` | 0.002 | |
+| `wall` | 0.0135 | wall height from the underside (high-wall track) |
+| `wallThickness` | 0.0032 | ⅛ in, which leaves 1¼ in (31.75 mm) clear inside |
 | `lead` | 0.02 | straight run at both ends of every piece (curves and ramps included): the joint |
 | `holes` | true | a connector hole through the floor in each lead |
 | `holeLength`, `holeWidth` | 0.008, 0.012 | hole size (along, across) |
@@ -28,10 +28,18 @@ on each side (a U-channel), open on top.
 | `clearance` | 0.0002 | play between a connector peg and its hole, per side |
 | `segment` | 0.008 | longest sample along curves, ramps and loops |
 
-Presets: `die-cast`, `wide` (50 mm, 10 mm walls), `sturdy` (thicker floor and walls). There is no
-published spec for the orange track, so these are good starting points rather than exact copies:
-measure a piece of yours with calipers and **print a short straight and a connector first** to check
-the fit before printing a whole layout.
+Presets: `die-cast` (high wall), `low-wall` (10 mm walls — the track that bends into a loop), `wide`
+(50 mm, 16 mm walls), `sturdy` (thicker floor and walls).
+
+**Where these numbers come from.** Mattel publishes no drawing. What is published and repeated
+consistently is the overall width, 1½ in (38.1 mm), and the clearance inside, 1¼ in (31.75 mm); ⅛ in
+(3.2 mm) of side wall is what fits between the two, and the three agree, which is what you would expect
+from a part designed in inches. Wall height is only ever described in families — high wall for straights,
+low wall for what bends into a loop, superflex lower still — hence the presets; 13.5 mm is the overall
+height of a measured community model of high-wall track. Nobody here has had a caliper on a piece. Real
+track also moves: Mattel has retooled it repeatedly, and racers who sort a bag by hand report width, wall
+height and bed height all varying from piece to piece. So **measure yours**, fill in the real track below,
+and **print the fit test and one short straight first** before a whole layout.
 
 ## Pieces (`track.piece`)
 

@@ -1,6 +1,6 @@
 [package]
 name = "plannr-plugin-track"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Plannr toy car track plugin: 1:64 die-cast (Hot Wheels-compatible) track pieces that chain end to end, with connectors and supports, ready to 3D print"

@@ -33,9 +33,9 @@ const esc = (s: string) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<
 const top = (op: string, data: unknown): Op => ({ op: 'custom', type: `track.${op}`, data } as Op);
 const customs = (doc: Document, type: string) => doc.entities.filter((e): e is CustomEntity => e.kind === 'custom' && e.type === type);
 const pieceOf = (e: CustomEntity) => e.data as Piece;
-const REAL_D: Real = { measured: false, width: 0.042, floor: 0.002, wall: 0.008, wallThickness: 0.002, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, fit: 0.00015 };
+const REAL_D: Real = { measured: false, width: 0.0381, floor: 0.002, wall: 0.0135, wallThickness: 0.0032, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, fit: 0.00015 };
 const realOf = (doc: Document): Real => ({ ...REAL_D, ...(((doc.extensions?.track as any)?.real) ?? {}) });
-const profile = (doc: Document): Profile => ({ preset: 'die-cast', width: 0.042, floor: 0.002, wall: 0.008, wallThickness: 0.002, lead: 0.02, holes: true, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, connectorThickness: 0.0016, clearance: 0.0002, segment: 0.008, ...(((doc.extensions?.track as any)?.profile) ?? {}) });
+const profile = (doc: Document): Profile => ({ preset: 'die-cast', width: 0.0381, floor: 0.002, wall: 0.0135, wallThickness: 0.0032, lead: 0.02, holes: true, holeLength: 0.008, holeWidth: 0.012, holeInset: 0.008, connectorThickness: 0.0016, clearance: 0.0002, segment: 0.008, ...(((doc.extensions?.track as any)?.profile) ?? {}) });
 const mm = (m: number) => +(m * 1000).toFixed(1);
 const isTrack = (doc: Document, id: string) => doc.entities.some(e => e.id === id && e.kind === 'custom' && e.type.startsWith('track.'));
 function label(p: Piece): string {
@@ -182,11 +182,11 @@ function panel(ctx: ToolContext, el: HTMLElement) {
     <div class="btn-row"><button class="btn" data-act="connectors" title="A connector under every joint between pieces (prints separately, in blue)">+ Connectors</button><button class="btn" data-act="supports" title="Supports under raised track every 15 cm">+ Supports</button><button class="btn primary" data-act="print" title="Download every piece, connector and support as one 3MF, laid out on the plate">Print all (3MF)</button></div>
     ${info ? infoHtml(info, pl) : ''}
     <details style="margin-top:10px" ${state.profileOpen ? 'open' : ''} data-details><summary class="muted" style="font-size:11px;cursor:default">Track profile · ${esc(prof.preset)} · ${mm(prof.width)} mm wide</summary>
-      <div class="kv" style="margin-top:6px"><label>Preset</label><select data-preset><option value="die-cast" ${prof.preset === 'die-cast' ? 'selected' : ''}>1:64 die-cast (orange track)</option><option value="wide" ${prof.preset === 'wide' ? 'selected' : ''}>Wide &amp; deep</option><option value="sturdy" ${prof.preset === 'sturdy' ? 'selected' : ''}>Sturdy</option>${prof.preset === 'custom' ? '<option value="custom" selected>Custom</option>' : ''}</select>
+      <div class="kv" style="margin-top:6px"><label>Preset</label><select data-preset><option value="die-cast" ${prof.preset === 'die-cast' ? 'selected' : ''}>1:64 die-cast (orange track)</option><option value="low-wall" ${prof.preset === 'low-wall' ? 'selected' : ''}>1:64 low wall (loop track)</option><option value="wide" ${prof.preset === 'wide' ? 'selected' : ''}>Wide &amp; deep</option><option value="sturdy" ${prof.preset === 'sturdy' ? 'selected' : ''}>Sturdy</option>${prof.preset === 'custom' ? '<option value="custom" selected>Custom</option>' : ''}</select>
         ${pf('width', 'Width')}${pf('floor', 'Floor')}${pf('wall', 'Wall height')}${pf('wallThickness', 'Wall thickness')}${pf('lead', 'Straight ends')}
         <label>Connector holes</label><input type="checkbox" data-pf="holes" ${prof.holes ? 'checked' : ''}>
         ${pf('holeLength', 'Hole length')}${pf('holeWidth', 'Hole width')}${pf('holeInset', 'Hole from end')}${pf('connectorThickness', 'Connector plate')}${pf('clearance', 'Peg clearance')}</div>
-      <div class="muted" style="font-size:11px;margin-top:4px">The defaults follow the orange 1:64 track (≈ 42 mm wide). Measure a piece of yours with calipers and print a short straight and a connector first to check the fit.</div></details>`;
+      <div class="muted" style="font-size:11px;margin-top:4px">The defaults follow the published figures for orange 1:64 track: 1½ in (38.1 mm) outside, 1¼ in (31.75 mm) clear, so ⅛ in (3.2 mm) walls. Real track varies from piece to piece — measure yours with calipers, set the real track below, and print the fit test and one short straight before anything else.</div></details>`;
   el.querySelectorAll<HTMLElement>('[data-add]').forEach(b => b.onclick = () => { const p = PALETTE.find(x => x.id === b.dataset.add)!; addPiece(ctx, p.data(), `Add ${p.label.toLowerCase()}`); });
   el.querySelectorAll<HTMLInputElement>('[data-st]').forEach(i => i.onchange = () => { const v = parseFloat(i.value); if (isFinite(v)) { (state as any)[i.dataset.st!] = v; save(); } });
   el.querySelector<HTMLElement>('[data-details]')!.addEventListener('toggle', e => { state.profileOpen = (e.target as HTMLDetailsElement).open; save(); });

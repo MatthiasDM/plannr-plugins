@@ -7,6 +7,7 @@
 
 pub mod formats;
 pub mod mesh;
+pub mod orient;
 
 use std::collections::HashMap;
 
@@ -33,6 +34,10 @@ pub struct Options {
     pub merge: bool,
     pub repair: bool,
     pub colors: bool,
+    /// Stand each object the way it prints best (default true).
+    pub orient: bool,
+    /// Per-object orientation: entity id → "keep", "auto", or the direction that goes against the plate.
+    pub orient_by: HashMap<String, Value>,
 }
 impl Options {
     pub fn parse(v: &Value) -> Options {
@@ -49,6 +54,8 @@ impl Options {
             merge: b("merge", false),
             repair: b("repair", true),
             colors: b("colors", true),
+            orient: b("orient", true),
+            orient_by: v.get("orientById").and_then(|x| x.as_object()).map(|m| m.iter().map(|(k, x)| (k.clone(), x.clone())).collect()).unwrap_or_default(),
         }
     }
 }
@@ -62,12 +69,19 @@ fn options_schema() -> Value {
         "merge": { "type": "boolean", "description": "One object instead of one per group / component / plugin entity (default false)" },
         "repair": { "type": "boolean", "description": "Remove internal walls and duplicate faces, split T-junctions, fix windings (default true)" },
         "colors": { "type": "boolean", "description": "3MF: give each object its material colour (default true)" },
+        "orient": { "type": "boolean", "description": "Stand each object the way it prints best — a track piece opening-up, a ramp flat on its floor — instead of the way it sits in the model (default true). Only when laying out on the plate." },
+        "orientById": { "type": "object", "description": "Fix one object's orientation: entity id → \"keep\" (as it stands), \"auto\", or [x, y, z], the direction of the object that goes against the plate (print coordinates, mm, Z up)." },
         "ids": { "type": "array", "items": { "type": "string" }, "description": "Only these entities" }
     } })
 }
 
 /// One printable object: what a top-level group, component instance or plugin entity turns into.
 pub struct Object { pub key: String, pub name: String, pub color: Option<String>, pub mesh: Mesh, pub check: Check,
+    /// The direction of the object that was put against the plate ([0, 0, −1] = as it stands in the model).
+    pub down: V3,
+    /// What this orientation costs to print, and what leaving it as it stood would have cost.
+    pub print: orient::Score,
+    pub kept: orient::Score,
     /// Size in mm.
     pub size: V3,
     /// Bottom centre in print coordinates before any layout.
@@ -104,6 +118,17 @@ fn best_turn(mesh: &mut Mesh, plate: [f64; 3]) {
     for p in mesh.v.iter_mut() { let (x, y) = (p[0] * c - p[1] * s, p[0] * s + p[1] * c); p[0] = x; p[1] = y; }
 }
 
+/// The direction an object puts against the plate, from an `orientById` entry or an entity's `print`
+/// hint: `[x, y, z]` on its own, or `{ "down": [x, y, z] }`. "keep" and "auto" give none.
+fn down_vector(v: &Value) -> Option<V3> {
+    let a = v.as_array().or_else(|| v.get("down").and_then(|d| d.as_array()))?;
+    if a.len() < 3 { return None; }
+    let d: Vec<f64> = a.iter().take(3).map(|x| x.as_f64().unwrap_or(f64::NAN)).collect();
+    let d = [d[0], d[1], d[2]];
+    if d.iter().any(|x| !x.is_finite()) || d == [0.0; 3] { return None; }
+    Some(d)
+}
+
 /// Print coordinates of a model point: metres Y-up → millimetres Z-up (x stays, model −z is print +y).
 fn to_print(p: [f32; 3], k: f64) -> V3 { [p[0] as f64 * k, -(p[2] as f64) * k, p[1] as f64 * k] }
 
@@ -113,7 +138,10 @@ pub fn objects(scene: &CompiledScene, doc: &Document, o: &Options) -> Vec<Object
     let mut top: HashMap<String, String> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
     let mut counters: HashMap<String, usize> = HashMap::new();
+    // a plugin entity may say how it prints: data.print = { "down": [x, y, z] } in model coordinates
+    let mut hints: HashMap<String, Value> = HashMap::new();
     for e in &doc.entities {
+        if let Entity::Custom(c) = e { if let Some(h) = c.data.get("print") { hints.insert(c.id.clone(), h.clone()); } }
         let (key, name) = match e {
             Entity::Face(_) | Entity::Edge(_) => ("__loose".to_string(), "Loose geometry".to_string()),
             Entity::Group(g) => (g.id.clone(), if g.name.trim().is_empty() { "Group".into() } else { g.name.clone() }),
@@ -156,6 +184,25 @@ pub fn objects(scene: &CompiledScene, doc: &Document, o: &Options) -> Vec<Object
         let mut mesh = w.mesh;
         let check = mesh.repair(o.repair);
         mesh.compact();
+        if mesh.bounds().is_none() { continue; }
+        // which way up it prints: the option for this object, else what the entity asks for, else the
+        // best of its own faces. Only while laying out on the plate — "where they are in the model" has
+        // to stay where it is unless this object's orientation was asked for by name.
+        let (opt, hint) = (o.orient_by.get(&key), hints.get(&key));
+        let said = opt.or(hint);
+        // the option speaks print coordinates; an entity speaks the model's (metres, Y up)
+        let forced = match (opt.and_then(down_vector), hint.and_then(down_vector)) {
+            (Some(d), _) => Some(d),
+            (None, Some(d)) => Some([d[0], -d[2], d[1]]),
+            _ => None,
+        };
+        let auto = o.orient && said.map(|v| v.as_str() != Some("keep")).unwrap_or(true);
+        let (down, print, kept) = if (o.arrange && !o.merge) || forced.is_some() {
+            orient::choose(&mesh, o.plate, auto, forced)
+        } else {
+            let s = orient::score(&mesh, [0.0, 0.0, -1.0], o.plate); ([0.0, 0.0, -1.0], s.clone(), s)
+        };
+        if down != [0.0, 0.0, -1.0] { mesh.rotate_down(down); }
         let Some((lo, hi)) = mesh.bounds() else { continue };
         let anchor = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, lo[2]];
         mesh.translate([-anchor[0], -anchor[1], -anchor[2]]);
@@ -163,7 +210,7 @@ pub fn objects(scene: &CompiledScene, doc: &Document, o: &Options) -> Vec<Object
         let (lo, hi) = if o.arrange && !o.merge { best_turn(&mut mesh, o.plate); let (l, h) = mesh.bounds().unwrap(); mesh.translate([-(l[0] + h[0]) / 2.0, -(l[1] + h[1]) / 2.0, 0.0]); mesh.bounds().unwrap() } else { (lo, hi) };
         let color = colors.into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|c| c.0).filter(|_| o.colors);
         let name = if o.merge { "Model".to_string() } else { names.get(&key).cloned().unwrap_or_else(|| "Object".into()) };
-        out.push(Object { key, name, color, mesh, check, size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], anchor, offset: [0.0; 3], plate: 0 });
+        out.push(Object { key, name, color, mesh, check, down, print, kept, size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], anchor, offset: [0.0; 3], plate: 0 });
     }
     layout(&mut out, o);
     out
@@ -201,6 +248,7 @@ fn r1(x: f64) -> f64 { (x * 10.0).round() / 10.0 }
 pub fn report(objs: &[Object], o: &Options, format: &str) -> Value {
     let [w, d, h] = o.plate;
     let mut warnings: Vec<String> = vec![];
+    let mut notes: Vec<String> = vec![];
     let list: Vec<Value> = objs.iter().map(|b| {
         let [sx, sy, sz] = b.size;
         let fits = sz <= h + 1e-6 && ((sx <= w + 1e-6 && sy <= d + 1e-6) || (sy <= w + 1e-6 && sx <= d + 1e-6));
@@ -211,10 +259,18 @@ pub fn report(objs: &[Object], o: &Options, format: &str) -> Value {
         if c.non_manifold_edges > 0 { warnings.push(format!("{} has {} edge{} shared by more than two faces (solids touching along an edge, or a face inside a solid).", b.name, c.non_manifold_edges, if c.non_manifold_edges == 1 { "" } else { "s" })); }
         let thin = sx.min(sy).min(sz);
         if thin < 0.8 && c.surfaces == 0 { warnings.push(format!("{} is only {:.2} mm thick somewhere along its smallest side: thinner than two nozzle widths.", b.name, thin)); }
+        let turned = b.down != [0.0, 0.0, -1.0];
+        let saved = b.kept.support - b.print.support;
+        if turned && saved > 1.0 { notes.push(format!("{} prints turned over: {:.0} mm² less support than the way it sits in the model.", b.name, saved)); }
+        if b.print.support > 100.0 && b.print.support > 0.25 * b.print.base.max(1.0) {
+            warnings.push(format!("{} needs about {:.0} mm² of support however it is turned ({:.0} mm² rests on the plate). Check the slicer's preview: a piece this shape often prints better split in two.", b.name, b.print.support, b.print.base));
+        }
         json!({ "id": b.key, "name": b.name, "size": [r1(sx), r1(sy), r1(sz)], "triangles": b.mesh.t.len(), "shells": c.shells,
             "watertight": c.watertight(), "openEdges": c.open_edges, "nonManifoldEdges": c.non_manifold_edges, "surfaces": c.surfaces,
             "volumeCm3": (c.volume / 1000.0 * 100.0).round() / 100.0, "fits": fits, "plate": b.plate + 1, "color": b.color,
-            "repaired": { "internalFaces": c.internal, "duplicates": c.duplicates, "tJunctions": c.tjunctions, "flipped": c.flipped, "degenerate": c.degenerate } })
+            "orientation": { "down": b.down.map(|x| (x * 1000.0).round() / 1000.0), "turned": turned,
+            "supportMm2": r1(b.print.support), "baseMm2": r1(b.print.base), "keptSupportMm2": r1(b.kept.support) },
+        "repaired": { "internalFaces": c.internal, "duplicates": c.duplicates, "tJunctions": c.tjunctions, "flipped": c.flipped, "degenerate": c.degenerate } })
     }).collect();
     let lo = objs.iter().fold([f64::MAX; 3], |m, b| [m[0].min(b.offset[0] - b.size[0] / 2.0), m[1].min(b.offset[1] - b.size[1] / 2.0), m[2].min(b.offset[2])]);
     let hi = objs.iter().fold([f64::MIN; 3], |m, b| [m[0].max(b.offset[0] + b.size[0] / 2.0), m[1].max(b.offset[1] + b.size[1] / 2.0), m[2].max(b.offset[2] + b.size[2])]);
@@ -230,7 +286,7 @@ pub fn report(objs: &[Object], o: &Options, format: &str) -> Value {
         "volumeCm3": (volume / 10.0).round() / 100.0,
         // solid PLA (1.24 g/cm³); the slicer's figure with infill will be lower
         "solidGramsPla": (volume / 1000.0 * 1.24 * 10.0).round() / 10.0,
-        "plates": plates, "warnings": warnings,
+        "plates": plates, "warnings": warnings, "notes": notes, "oriented": o.orient,
     })
 }
 

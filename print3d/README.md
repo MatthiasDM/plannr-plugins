@@ -29,7 +29,18 @@ Manage plugins… → Install from file**. Switch it off or remove it in the sam
 6. **Check** each object: shells, open edges (holes), non-manifold edges (more than two faces on an
    edge), shells without volume (a face that was never pushed into a solid), volume, size, whether it
    fits the build volume (also turned 90° and, when laid out, at any angle).
-7. **Lay out** (`arrange`, default on): each object is turned about Z to take the least room (fitting
+7. **Stand each object the way it prints best** (`orient`, default on, while laying out). A printer
+   builds in layers from the plate up, so a face that leans more than 45° from upright has nothing under
+   it and the slicer props it up with support: material to break off and a rough surface where it was. A
+   U-shaped track piece printed opening-up is nothing but upright walls on a flat floor and needs none; the
+   same piece on its side has the whole floor hanging in the air. Each object is therefore scored standing
+   on the six plate directions and on each of its own flat faces — support footprint in mm², the area
+   resting on the plate, and height — and turned onto the best one. The model's own up wins ties and keeps
+   anything the turn would not clearly improve (margin: 25 mm² of support), so a house stays a house; an
+   object too tall for the printer is laid down if that makes it fit. `orientById` fixes one object:
+   `"keep"` leaves it as it stands, `[x, y, z]` is the direction of the object that goes against the plate
+   (print coordinates). A plugin entity can ask for its own, with `data.print.down` in model coordinates.
+8. **Lay out** (`arrange`, default on): each object is turned about Z to take the least room (fitting
    when some angle makes it fit), then placed in rows on the plate, largest first, `gap` mm apart; objects
    that don't fit on one plate go on further plates, set to the right of the first (the slicer's Arrange
    spreads them over its own plates). Without `arrange` the objects keep their places in the model, the
@@ -55,6 +66,8 @@ Query parameters of `GET /api/projects/:id/export/{3mf,stl}`, or `options` of th
 | `merge` | false | one object |
 | `repair` | true | fix what can be fixed |
 | `colors` | true | 3MF base material colours |
+| `orient` | true | stand each object the way it prints best (while laying out) |
+| `orientById` | — | one object's orientation: id → `"keep"`, `"auto"` or `[x, y, z]` (the side that goes against the plate, print coordinates). MCP `options` only — a query parameter can't hold an object |
 | `report` | — | `1`: return only the JSON report |
 
 ## Report
@@ -64,17 +77,23 @@ Query parameters of `GET /api/projects/:id/export/{3mf,stl}`, or `options` of th
   "objects": [{ "id": "…", "name": "Curve 90° left R150", "size": [171.0, 171.0, 8.0], "triangles": 812, "shells": 1,
                 "watertight": true, "openEdges": 0, "nonManifoldEdges": 0, "surfaces": 0, "volumeCm3": 18.2,
                 "fits": true, "plate": 1, "color": "#ff7a1a",
+                "orientation": { "down": [0,0,-1], "turned": false, "supportMm2": 0.0, "baseMm2": 1960.4, "keptSupportMm2": 0.0 },
                 "repaired": { "internalFaces": 0, "duplicates": 0, "tJunctions": 0, "flipped": 0, "degenerate": 0 } }],
-  "size": [x, y, z], "watertight": true, "volumeCm3": 120.4, "solidGramsPla": 149.3, "plates": 1, "warnings": [] }
+  "size": [x, y, z], "watertight": true, "volumeCm3": 120.4, "solidGramsPla": 149.3, "plates": 1,
+  "oriented": true, "notes": ["Ramp +40 mm prints turned over: 1240 mm² less support …"], "warnings": [] }
 ```
 
 `solidGramsPla` is the weight printed solid in PLA (1.24 g/cm³); the slicer's figure with infill is lower.
+`orientation.down` is the direction of the object that was put against the plate — `[0, 0, -1]` is the way
+it sits in the model — `supportMm2` what this orientation still needs propped up and `keptSupportMm2` what
+leaving it alone would have cost. `notes` says which objects were turned and what it saved.
 
 ## Panel
 
 Print *the selection* or *the whole model*, a scale (1:1 … 1:500 or custom, also typed as `1:87`), the
 printer (Bambu Lab X1/P1/A1, H2D, A1 mini, Prusa MK4, CORE One, MINI, XL, Creality Ender-3 V3, K1, K1 Max,
-Elegoo Neptune 4, Voron 350, or a custom build volume), lay-out and merge. **Check** shows the report
+Elegoo Neptune 4, Centauri Carbon 2 / 2 Combo, Voron 350, or a custom build volume), lay-out, standing each
+object the way it prints best, and merge. Each object's row says how much support it still needs. **Check** shows the report
 (click an object to select it); **Download 3MF** / **STL** save the file. Settings are remembered in the
 browser. Other plugins reach it as `window.plannr.print3d.download(format, opts, name)` (the car track's
 *Print all* does), and the viewport command `print_check` returns a report.
@@ -87,3 +106,6 @@ browser. Other plugins reach it as `window.plannr.print3d.download(format, opts,
   `merge` to make one object of separate groups); solids that only overlap are left as they are (slicers
   union overlapping shells of one object).
 - Holes left open are reported with the number of open edges; slicers patch small ones, but check.
+- Orientation is per object, so model each piece as its own group: one object standing well does not help
+  the next one. If a piece needs support however it is turned, that is the shape talking — split it in two
+  and glue, or print it in halves that each lie flat.

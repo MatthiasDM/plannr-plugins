@@ -79,6 +79,39 @@ impl Mesh {
         Some(it.fold((first, first), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])], [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])])))
     }
     pub fn translate(&mut self, d: V3) { for p in self.v.iter_mut() { p[0] += d[0]; p[1] += d[1]; p[2] += d[2]; } }
+    /// Apply a rotation (rows of the matrix) about the origin.
+    pub fn rotate(&mut self, m: [V3; 3]) {
+        for p in self.v.iter_mut() { *p = [dot(m[0], *p), dot(m[1], *p), dot(m[2], *p)]; }
+    }
+    /// Turn the mesh so `down` points at the plate (print −Z): the shortest turn that gets it there, so the
+    /// object keeps as much of its bearing as it can.
+    pub fn rotate_down(&mut self, down: V3) {
+        let l = len(down); if l < 1e-12 { return; }
+        let d = [down[0] / l, down[1] / l, down[2] / l];
+        let to = [0.0, 0.0, -1.0];
+        let axis = cross(d, to); let s = len(axis); let c = dot(d, to);
+        if s < 1e-9 {
+            // already down, or exactly up: turn it over about x
+            if c > 0.0 { return; }
+            self.rotate([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]);
+            return;
+        }
+        let k = [axis[0] / s, axis[1] / s, axis[2] / s];
+        let (sin, cos) = (s, c);
+        let (x, y, z) = (k[0], k[1], k[2]);
+        let t = 1.0 - cos;
+        self.rotate([
+            [t * x * x + cos, t * x * y - sin * z, t * x * z + sin * y],
+            [t * x * y + sin * z, t * y * y + cos, t * y * z - sin * x],
+            [t * x * z - sin * y, t * y * z + sin * x, t * z * z + cos],
+        ]);
+    }
+    /// Outward unit normal and area (mm²) of a triangle; the normal is zero for a degenerate one.
+    pub fn normal_area(&self, t: &[u32; 3]) -> (V3, f64) {
+        let c = self.tri_area2(t); let l = len(c);
+        if l < 1e-15 { return ([0.0; 3], 0.0); }
+        ([c[0] / l, c[1] / l, c[2] / l], l / 2.0)
+    }
     /// Drop vertices no triangle uses and renumber.
     pub fn compact(&mut self) {
         let mut remap = vec![u32::MAX; self.v.len()];

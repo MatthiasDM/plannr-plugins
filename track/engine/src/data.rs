@@ -14,8 +14,17 @@ pub const MAT_CONNECTOR: &str = "Track connector";
 pub const MAT_SUPPORT: &str = "Track support";
 pub const MAT_TEST: &str = "Track fit test";
 
-/// The channel every piece shares. Metres. The defaults follow the orange 1:64 die-cast track (about
-/// 42 mm wide); measure yours and adjust, and print a short straight first to test the fit.
+/// The channel every piece shares. Metres.
+///
+/// The defaults follow the published figures for the orange 1:64 die-cast track: 1½ inch (38.1 mm) over
+/// the outside and 1¼ inch (31.75 mm) clear inside, which leaves ⅛ inch (3.2 mm) of side wall — Mattel
+/// designs in inches, and those three numbers agree. Nobody here has had a caliper on a piece, and real
+/// track does not hold still: Mattel has retooled it repeatedly, and racers who sort a bag of track by
+/// hand report that width, wall height and bed height all vary from piece to piece and era to era. So
+/// these are a starting point, not a specification. Wall height comes in three families — high wall for
+/// straights (`die-cast`), low wall for what bends into a loop (`low-wall`), and the very low superflex —
+/// which is why it is a preset rather than one number. Measure yours, set [`Real`], and print the fit
+/// test and one short straight before you print twenty pieces.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Profile {
@@ -46,20 +55,24 @@ impl Default for Profile {
 }
 impl Profile {
     pub fn preset(name: &str) -> Option<Profile> {
-        let base = Profile { preset: "die-cast".into(), width: 0.042, floor: 0.002, wall: 0.008, wall_thickness: 0.002, lead: 0.02, holes: true, hole_length: 0.008, hole_width: 0.012, hole_inset: 0.008, connector_thickness: 0.0016, clearance: 0.0002, segment: 0.008 };
+        // 1½ in over the outside, ⅛ in walls (so 1¼ in clear), high wall: 13.5 mm from the underside
+        let base = Profile { preset: "die-cast".into(), width: 0.0381, floor: 0.002, wall: 0.0135, wall_thickness: 0.0032, lead: 0.02, holes: true, hole_length: 0.008, hole_width: 0.012, hole_inset: 0.008, connector_thickness: 0.0016, clearance: 0.0002, segment: 0.008 };
         Some(match name {
-            "die-cast" | "hotwheels" | "hot-wheels" => base,
+            "die-cast" | "hotwheels" | "hot-wheels" | "high-wall" => base,
+            // the low-wall track, the kind that bends into a loop
+            "low-wall" | "loop" => Profile { preset: "low-wall".into(), wall: 0.010, ..base },
             // a wider, deeper channel: forgiving for bigger cars and first prints
-            "wide" => Profile { preset: "wide".into(), width: 0.05, wall: 0.01, wall_thickness: 0.0024, ..base },
+            "wide" => Profile { preset: "wide".into(), width: 0.05, wall: 0.016, wall_thickness: 0.0024, ..base },
             // sturdier for tall builds and kids: thicker floor and walls
-            "sturdy" => Profile { preset: "sturdy".into(), floor: 0.0028, wall_thickness: 0.0026, wall: 0.009, connector_thickness: 0.002, ..base },
+            "sturdy" => Profile { preset: "sturdy".into(), floor: 0.0028, wall_thickness: 0.0038, connector_thickness: 0.002, ..base },
             _ => return None,
         })
     }
 }
 
 /// The **real** track this layout joins: the shop-bought orange track of your garage, as you measured it
-/// with calipers. It is never printed — it is what an [`Kind::Adapter`] piece mates with and what the fit
+/// with calipers. The defaults are [`Profile`]'s published figures, which are close enough to draw with
+/// and nowhere near close enough to print a joint against. It is never printed — it is what an [`Kind::Adapter`] piece mates with and what the fit
 /// test is sized against. `measured` stays false until someone has actually put a caliper on a piece, and
 /// everything that depends on these numbers says so while it is false.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

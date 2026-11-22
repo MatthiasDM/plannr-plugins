@@ -1,7 +1,7 @@
 {
   "id": "track",
   "name": "Car Track",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Design printable track for 1:64 die-cast cars (the orange Hot Wheels-style channel): straights, curves, ramps and loops that chain end to end, connectors, supports, Split to fit for your printer, and a Test drive that runs a car over the track. Joins track you already own: measure it with calipers, print the fit test coupon, and use an adapter piece and anchors to meet a shop-bought set exactly. Install 3D Print as well to download the pieces.",
   "author": "MatthiasDM",
   "homepage": "https://github.com/MatthiasDM/plannr-plugins/tree/main/track",

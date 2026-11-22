@@ -1,6 +1,6 @@
 [package]
 name = "plannr-plugin-print3d"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT"
 description = "Plannr 3D print plugin: exports solids as STL / 3MF in millimetres, checks they are watertight, repairs small defects and lays objects out on the build plate"
