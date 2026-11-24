@@ -45,6 +45,15 @@ Manage plugins… → Install from file**. Switch it off or remove it in the sam
    that don't fit on one plate go on further plates, set to the right of the first (the slicer's Arrange
    spreads them over its own plates). Without `arrange` the objects keep their places in the model, the
    whole set centred on the plate and standing on it.
+9. **Keep clear** (`exclude`): a printer keeps part of its own plate free — the Elegoo Centauri Carbon
+   wipes its nozzle in a 10 × 20 mm corner at `246,0,256,20` — and a piece left standing there is knocked
+   off or fouls the head. Each keep-out is `[x0, y0, x1, y1]` in mm from the plate's near left corner, and
+   the lay-out steps around them: blocked, it moves to the right of the obstacle, then to the next row.
+   The panel fills them in from the printer you pick; a custom printer takes them as typed. A piece that
+   fits nowhere is laid down anyway and the report warns about it, rather than opening plate after plate
+   for something that cannot fit on any of them. Keep-outs are a lay-out rule: without `arrange` the
+   objects stay where the model has them and nothing is moved. OrcaSlicer calls this `bed_exclude_area`
+   and `get_profile` prints it, which is where the figures in the panel's printer list come from.
 
 **3MF** holds one `<object>` per object (vertices around its own bottom centre) and a build item that
 places it, `unit="millimeter"`, and a base material per object with its colour (the dominant material).
@@ -67,13 +76,14 @@ Query parameters of `GET /api/projects/:id/export/{3mf,stl}`, or `options` of th
 | `repair` | true | fix what can be fixed |
 | `colors` | true | 3MF base material colours |
 | `orient` | true | stand each object the way it prints best (while laying out) |
+| `exclude` | — | areas the printer keeps clear: `[[x0, y0, x1, y1], …]` in mm, or the string `"x0,y0,x1,y1;…"` so it also fits in a query parameter |
 | `orientById` | — | one object's orientation: id → `"keep"`, `"auto"` or `[x, y, z]` (the side that goes against the plate, print coordinates). MCP `options` only — a query parameter can't hold an object |
 | `report` | — | `1`: return only the JSON report |
 
 ## Report
 
 ```json
-{ "format": "3mf", "unit": "mm", "scale": 1, "plate": [256,256,256], "arranged": true,
+{ "format": "3mf", "unit": "mm", "scale": 1, "plate": [256,256,256], "exclude": [[246,0,256,20]], "arranged": true,
   "objects": [{ "id": "…", "name": "Curve 90° left R150", "size": [171.0, 171.0, 8.0], "triangles": 812, "shells": 1,
                 "watertight": true, "openEdges": 0, "nonManifoldEdges": 0, "surfaces": 0, "volumeCm3": 18.2,
                 "fits": true, "plate": 1, "color": "#ff7a1a",
@@ -86,14 +96,16 @@ Query parameters of `GET /api/projects/:id/export/{3mf,stl}`, or `options` of th
 `solidGramsPla` is the weight printed solid in PLA (1.24 g/cm³); the slicer's figure with infill is lower.
 `orientation.down` is the direction of the object that was put against the plate — `[0, 0, -1]` is the way
 it sits in the model — `supportMm2` what this orientation still needs propped up and `keptSupportMm2` what
-leaving it alone would have cost. `notes` says which objects were turned and what it saved.
+leaving it alone would have cost. `notes` says which objects were turned and what it saved, and `exclude`
+echoes the areas kept clear, so you can see which ones the export used.
 
 ## Panel
 
 Print *the selection* or *the whole model*, a scale (1:1 … 1:500 or custom, also typed as `1:87`), the
 printer (Bambu Lab X1/P1/A1, H2D, A1 mini, Prusa MK4, CORE One, MINI, XL, Creality Ender-3 V3, K1, K1 Max,
-Elegoo Neptune 4, Centauri Carbon 2 / 2 Combo, Voron 350, or a custom build volume), lay-out, standing each
-object the way it prints best, and merge. Each object's row says how much support it still needs. **Check** shows the report
+Elegoo Neptune 4, Centauri Carbon, Centauri Carbon 2 / 2 Combo, Voron 350, or a custom build volume that
+also takes the areas it keeps clear), lay-out, standing each object the way it prints best, and merge.
+Each object's row says how much support it still needs. **Check** shows the report
 (click an object to select it); **Download 3MF** / **STL** save the file. Settings are remembered in the
 browser. Other plugins reach it as `window.plannr.print3d.download(format, opts, name)` (the car track's
 *Print all* does), and the viewport command `print_check` returns a report.

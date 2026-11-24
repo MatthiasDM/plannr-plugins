@@ -295,3 +295,92 @@ fn an_entity_can_say_how_it_prints_and_the_options_can_overrule_it() {
     let (b, _) = objs(&d, &r, json!({ "orientById": { gid: "keep" } }));
     assert_eq!(b[0].down, [0.0, 0.0, -1.0]);
 }
+
+/// Two groups, each a 40 × 40 mm box, on a small plate whose left strip the printer keeps clear.
+fn two_boxes(d: &mut Document, r: &Registry) {
+    boxed(d, r, [0.0, 0.0, 0.0], [0.04, 0.0, 0.04], 0.01);
+    let ids: Vec<String> = d.entities.iter().map(|e| e.id().to_string()).collect();
+    ops(d, r, json!([{ "op": "make_group", "ids": ids, "name": "A" }]));
+    let before: Vec<String> = d.entities.iter().map(|e| e.id().to_string()).collect();
+    boxed(d, r, [0.2, 0.0, 0.0], [0.24, 0.0, 0.04], 0.01);
+    let ids: Vec<String> = d.entities.iter().map(|e| e.id().to_string()).filter(|i| !before.contains(i)).collect();
+    ops(d, r, json!([{ "op": "make_group", "ids": ids, "name": "B" }]));
+}
+
+/// Is any object's footprint inside a keep-out rectangle?
+fn in_keep_out(b: &[plannr_plugin_print3d::Object], w: f64, e: [f64; 4]) -> bool {
+    b.iter().any(|o| {
+        let px = o.plate as f64 * (w + 20.0);
+        let (x0, y0) = (o.offset[0] - px - o.size[0] / 2.0, o.offset[1] - o.size[1] / 2.0);
+        let (x1, y1) = (x0 + o.size[0], y0 + o.size[1]);
+        x0 < e[2] - 1e-6 && e[0] < x1 - 1e-6 && y0 < e[3] - 1e-6 && e[1] < y1 - 1e-6
+    })
+}
+
+#[test]
+fn nothing_is_laid_out_in_an_area_the_printer_keeps_clear() {
+    let r = reg(); let mut d = doc();
+    two_boxes(&mut d, &r);
+    let plate = [150.0, 150.0, 150.0];
+    // the strip the Centauri Carbon keeps clear, here blown up to half the plate so a naive lay-out
+    // (which starts at the near left corner) cannot help but land in it
+    let keep = [0.0, 0.0, 75.0, 60.0];
+    let (b, rep) = objs(&d, &r, json!({ "plate": plate, "exclude": [keep] }));
+    assert_eq!(b.len(), 2, "{rep}");
+    assert!(!in_keep_out(&b, plate[0], keep), "an object sits in the keep-out area: {:?}", b.iter().map(|o| o.offset).collect::<Vec<_>>());
+    assert_eq!(rep["exclude"][0][2].as_f64().unwrap(), 75.0, "{rep}");
+    assert!(rep["warnings"].as_array().unwrap().is_empty(), "{rep}");
+    // without it they do start in that corner, so the test above is testing something
+    let (b, _) = objs(&d, &r, json!({ "plate": plate }));
+    assert!(in_keep_out(&b, plate[0], keep));
+}
+
+#[test]
+fn a_keep_out_area_also_comes_as_a_string_so_it_fits_in_a_url() {
+    let r = reg(); let mut d = doc();
+    two_boxes(&mut d, &r);
+    let plate = [150.0, 150.0, 150.0];
+    let keep = [0.0, 0.0, 75.0, 60.0];
+    // corners the other way round, and with spaces, the way a hand-written URL looks
+    let (b, rep) = objs(&d, &r, json!({ "plate": plate, "exclude": "75, 60, 0, 0" }));
+    assert_eq!(rep["exclude"].as_array().unwrap().len(), 1, "{rep}");
+    assert!(!in_keep_out(&b, plate[0], keep), "{rep}");
+}
+
+#[test]
+fn an_object_with_nowhere_free_to_go_is_reported_instead_of_hanging() {
+    let r = reg(); let mut d = doc();
+    two_boxes(&mut d, &r);
+    // every spot is kept clear: there is no free corner at all
+    let (b, rep) = objs(&d, &r, json!({ "plate": [150.0, 150.0, 150.0], "exclude": [[0, 0, 150, 150]] }));
+    assert_eq!(b.len(), 2);
+    let w: Vec<&str> = rep["warnings"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+    assert_eq!(w.len(), 2, "{rep}");
+    assert!(w[0].contains("keeps clear"), "{rep}");
+}
+
+#[test]
+fn a_keep_out_area_is_ignored_when_the_objects_stay_where_the_model_has_them() {
+    let r = reg(); let mut d = doc();
+    two_boxes(&mut d, &r);
+    // arrange off means "where they are in the model"; the keep-out areas are a lay-out rule only
+    let (b, _) = objs(&d, &r, json!({ "plate": [150.0, 150.0, 150.0], "arrange": false, "exclude": [[0, 0, 75, 60]] }));
+    assert_eq!(b.len(), 2);
+    let dx = (b[0].offset[0] - b[1].offset[0]).abs();
+    assert!((dx - 200.0).abs() < 1e-3, "the model's own 200 mm spacing is kept: {dx}");
+}
+
+#[test]
+fn an_object_wider_than_the_plate_still_steps_clear_of_a_keep_out() {
+    let r = reg(); let mut d = doc();
+    // 400 mm long on a 256 mm plate: it overhangs at every angle, but it can still move back in y,
+    // out of the corner the printer wipes its nozzle in
+    boxed(&mut d, &r, [0.0, 0.0, 0.0], [0.4, 0.0, 0.04], 0.01);
+    let plate = [256.0, 256.0, 256.0];
+    let keep = [246.0, 0.0, 256.0, 20.0];
+    let (b, rep) = objs(&d, &r, json!({ "plate": plate, "exclude": [keep] }));
+    assert!(b[0].size[0] > plate[0], "this test wants an object the plate cannot hold: {:?}", b[0].size);
+    assert!(!in_keep_out(&b, plate[0], keep), "{rep}");
+    let w: Vec<&str> = rep["warnings"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+    assert!(!w.iter().any(|x| x.contains("keeps clear")), "it found a spot, so there is nothing to warn about: {rep}");
+}

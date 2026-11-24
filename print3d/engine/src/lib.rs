@@ -38,6 +38,62 @@ pub struct Options {
     pub orient: bool,
     /// Per-object orientation: entity id → "keep", "auto", or the direction that goes against the plate.
     pub orient_by: HashMap<String, Value>,
+    /// Keep-out rectangles on the plate, `[x0, y0, x1, y1]` in mm — the printer's own dead corners (the
+    /// nozzle wipe, a cutter, the purge chute). Nothing is laid out there.
+    pub exclude: Vec<[f64; 4]>,
+}
+
+/// Keep-out rectangles from `exclude`: either `[[x0, y0, x1, y1], …]` or, so it also fits in a query
+/// parameter, the string `"x0,y0,x1,y1;x0,y0,x1,y1"`. Corners in any order; empty ones are dropped.
+fn exclusions(v: &Value, plate: [f64; 3]) -> Vec<[f64; 4]> {
+    let mut raw: Vec<[f64; 4]> = vec![];
+    match v.get("exclude") {
+        Some(Value::String(s)) => {
+            for part in s.split(';') {
+                let n: Vec<f64> = part.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).collect();
+                if n.len() >= 4 { raw.push([n[0], n[1], n[2], n[3]]); }
+            }
+        }
+        Some(Value::Array(a)) => {
+            for r in a {
+                let n: Vec<f64> = r.as_array().map(|r| r.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+                if n.len() >= 4 { raw.push([n[0], n[1], n[2], n[3]]); }
+            }
+        }
+        _ => {}
+    }
+    raw.into_iter()
+        .filter(|r| r.iter().all(|x| x.is_finite()))
+        .map(|r| [r[0].min(r[2]).max(0.0), r[1].min(r[3]).max(0.0), r[0].max(r[2]).min(plate[0]), r[1].max(r[3]).min(plate[1])])
+        .filter(|r| r[2] - r[0] > 1e-6 && r[3] - r[1] > 1e-6)
+        .take(16)
+        .collect()
+}
+
+/// Is there room for a `sx` × `sy` footprint on an empty plate, keep-out areas and gap included? Asked
+/// before laying an object out, because a piece that fits nowhere must not send the lay-out hunting
+/// across plate after plate. Only the corners the keep-out areas leave behind can be the first free
+/// spot, so those are the candidates.
+fn free_spot_exists(sx: f64, sy: f64, plate: [f64; 3], g: f64, exclude: &[[f64; 4]]) -> bool {
+    // an object too big for the plate is laid down anyway (`fits` in the report says so), so its own
+    // overhanging side is not what makes a spot impossible — only running into a keep-out is
+    let (fits_w, fits_d) = (sx + 2.0 * g <= plate[0] + 1e-6, sy + 2.0 * g <= plate[1] + 1e-6);
+    let mut xs = vec![g]; let mut ys = vec![g];
+    for e in exclude { xs.push(e[2] + g); ys.push(e[3] + g); }
+    xs.iter().any(|&x| ys.iter().any(|&y| {
+        (!fits_w || x + sx + g <= plate[0] + 1e-6)
+            && (!fits_d || y + sy + g <= plate[1] + 1e-6)
+            && blocked([x, y, x + sx, y + sy], exclude).is_none()
+    }))
+}
+
+/// Does this footprint (`[x0, y0, x1, y1]`, plate-local mm) run into a keep-out? Then the right edge of
+/// the one reaching furthest right, which is where the next try starts.
+fn blocked(rect: [f64; 4], exclude: &[[f64; 4]]) -> Option<f64> {
+    exclude.iter()
+        .filter(|e| rect[0] < e[2] - 1e-6 && e[0] < rect[2] - 1e-6 && rect[1] < e[3] - 1e-6 && e[1] < rect[3] - 1e-6)
+        .map(|e| e[2])
+        .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m: f64| m.max(x))))
 }
 impl Options {
     pub fn parse(v: &Value) -> Options {
@@ -56,6 +112,7 @@ impl Options {
             colors: b("colors", true),
             orient: b("orient", true),
             orient_by: v.get("orientById").and_then(|x| x.as_object()).map(|m| m.iter().map(|(k, x)| (k.clone(), x.clone())).collect()).unwrap_or_default(),
+            exclude: exclusions(v, plate),
         }
     }
 }
@@ -70,6 +127,7 @@ fn options_schema() -> Value {
         "repair": { "type": "boolean", "description": "Remove internal walls and duplicate faces, split T-junctions, fix windings (default true)" },
         "colors": { "type": "boolean", "description": "3MF: give each object its material colour (default true)" },
         "orient": { "type": "boolean", "description": "Stand each object the way it prints best — a track piece opening-up, a ramp flat on its floor — instead of the way it sits in the model (default true). Only when laying out on the plate." },
+        "exclude": { "type": "array", "description": "Keep-out rectangles on the plate, [[x0, y0, x1, y1], …] in mm — the printer's dead corners (nozzle wipe, cutter, purge chute). Nothing is laid out there. Also takes the string \"x0,y0,x1,y1;…\", so it fits in a query parameter. OrcaSlicer calls this bed_exclude_area." },
         "orientById": { "type": "object", "description": "Fix one object's orientation: entity id → \"keep\" (as it stands), \"auto\", or [x, y, z], the direction of the object that goes against the plate (print coordinates, mm, Z up)." },
         "ids": { "type": "array", "items": { "type": "string" }, "description": "Only these entities" }
     } })
@@ -233,8 +291,19 @@ pub fn layout(objs: &mut [Object], o: &Options) {
     let (mut x, mut y, mut row, mut plate) = (g, g, 0.0f64, 0usize);
     for i in order {
         let [sx, sy, _] = objs[i].size;
-        if x + sx + g > w && x > g { x = g; y += row + g; row = 0.0; }
-        if y + sy + g > d && y > g { plate += 1; x = g; y = g; row = 0.0; }
+        // a spot that fits the row, the plate and none of the printer's keep-out areas. An object with
+        // nowhere to go at all is laid down where the cursor stands and `report` warns about it — better
+        // than opening plate after plate for something that will not fit on any of them.
+        let placeable = o.exclude.is_empty() || free_spot_exists(sx, sy, o.plate, g, &o.exclude);
+        // the step is at least 1 mm, so a gap of 0 cannot make the row crawl in place forever
+        for _ in 0..if placeable { 4096 } else { 0 } {
+            if x + sx + g > w && x > g { x = g; y += (row + g).max(1.0); row = 0.0; continue; }
+            if y + sy + g > d && y > g { plate += 1; x = g; y = g; row = 0.0; continue; }
+            match blocked([x, y, x + sx, y + sy], &o.exclude) {
+                Some(right) if right + g > x => { x = right + g; continue; }
+                _ => break,
+            }
+        }
         // plates after the first sit to the right of it, as slicers show extra plates
         let px = plate as f64 * (w + 20.0);
         objs[i].offset = [px + x + sx / 2.0, y + sy / 2.0, 0.0];
@@ -259,6 +328,14 @@ pub fn report(objs: &[Object], o: &Options, format: &str) -> Value {
         if c.non_manifold_edges > 0 { warnings.push(format!("{} has {} edge{} shared by more than two faces (solids touching along an edge, or a face inside a solid).", b.name, c.non_manifold_edges, if c.non_manifold_edges == 1 { "" } else { "s" })); }
         let thin = sx.min(sy).min(sz);
         if thin < 0.8 && c.surfaces == 0 { warnings.push(format!("{} is only {:.2} mm thick somewhere along its smallest side: thinner than two nozzle widths.", b.name, thin)); }
+        // the plate's own keep-out areas: a piece there is hit by the nozzle wipe or the cutter
+        if !o.exclude.is_empty() {
+            let px = b.plate as f64 * (w + 20.0);
+            let foot = [b.offset[0] - px - sx / 2.0, b.offset[1] - sy / 2.0, b.offset[0] - px + sx / 2.0, b.offset[1] + sy / 2.0];
+            if blocked(foot, &o.exclude).is_some() {
+                warnings.push(format!("{} lies in an area the printer keeps clear. There was no free spot for it; move it by hand in the slicer, or print it on its own.", b.name));
+            }
+        }
         let turned = b.down != [0.0, 0.0, -1.0];
         let saved = b.kept.support - b.print.support;
         if turned && saved > 1.0 { notes.push(format!("{} prints turned over: {:.0} mm² less support than the way it sits in the model.", b.name, saved)); }
@@ -279,7 +356,7 @@ pub fn report(objs: &[Object], o: &Options, format: &str) -> Value {
     if format == "stl" && objs.len() > 1 && !o.arrange { warnings.push("An STL holds one mesh: objects that touch or overlap in the model are fused by the slicer. Use 3MF, or arrange, to keep them apart.".into()); }
     let volume: f64 = objs.iter().map(|b| b.check.volume).sum();
     json!({
-        "format": format, "unit": "mm", "scale": o.scale, "plate": o.plate, "arranged": o.arrange,
+        "format": format, "unit": "mm", "scale": o.scale, "plate": o.plate, "exclude": o.exclude, "arranged": o.arrange,
         "objects": list, "triangles": objs.iter().map(|b| b.mesh.t.len()).sum::<usize>(),
         "size": if objs.is_empty() { json!([0, 0, 0]) } else { json!([r1(hi[0] - lo[0]), r1(hi[1] - lo[1]), r1(hi[2] - lo[2])]) },
         "watertight": !objs.is_empty() && objs.iter().all(|b| b.check.watertight()),
